@@ -25,7 +25,7 @@ import java.util.*;
 import java.util.stream.*;
 
 /** Interactive Java snippets via JShell, terminal input via aesh. */
-public class jbang_repl implements AutoCloseable {
+public class repl implements AutoCloseable {
     private JShell jshell = JShell.builder().out(System.out).err(System.err).build();
     private ReplSyntaxHighlighter syntaxHighlighter = new ReplSyntaxHighlighter(jshell);
     private final Readline readline;
@@ -42,7 +42,7 @@ public class jbang_repl implements AutoCloseable {
     private boolean interruptArmed;
     private String feedbackMode = "normal";
 
-    public jbang_repl() throws IOException {
+    public repl() throws IOException {
         connection = new TerminalConnection();
         readline = ReadlineBuilder.builder().build();
         sink = s -> connection.write(s + "\n");
@@ -64,17 +64,17 @@ public class jbang_repl implements AutoCloseable {
     }
 
     /** Headless constructor for tests: no terminal, output captured via sink. */
-    jbang_repl(java.util.function.Consumer<String> sink) {
+    repl(java.util.function.Consumer<String> sink) {
         connection = null;
         readline = null;
         this.sink = sink;
     }
 
     public static void main(String[] args) throws Exception {
-        try (var repl = new jbang_repl()) {
+        try (var repl = new repl()) {
             if (args.length > 0) {
                 if (args.length == 1 && "--help".equals(args[0])) {
-                    System.out.println("Usage: jbang jbang_repl.java [--help]\nInteractive Java shell: /help for commands.");
+                    System.out.println("Usage: jbang repl.java [--help]\nInteractive Java shell: /help for commands.");
                     return;
                 }
                 System.err.println("Unknown arguments: " + String.join(" ", args));
@@ -203,7 +203,7 @@ public class jbang_repl implements AutoCloseable {
     }
 
     private final List<Completion> completions = List.<Completion>of(new Completion<CompleteOperation>() {
-        public void complete(CompleteOperation co) { jbang_repl.this.complete(co); }
+        public void complete(CompleteOperation co) { repl.this.complete(co); }
     });
 
     /** Live-colorize the editable buffer on cursor movement (aesh 3.14 only fires this on moveCursor). */

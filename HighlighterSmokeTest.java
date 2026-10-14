@@ -1,6 +1,6 @@
 ///usr/bin/env jbang "$0" "$@" ; exit $?
 //JAVA 21+
-//SOURCES jbang_repl.java
+//SOURCES repl.java
 
 import jdk.jshell.JShell;
 public class HighlighterSmokeTest {

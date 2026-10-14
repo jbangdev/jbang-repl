@@ -2,7 +2,7 @@
 //JAVA 21+
 //DEPS org.aesh:readline:3.14
 //DEPS org.aesh:terminal-tty:3.14
-//SOURCES jbang_repl.java
+//SOURCES repl.java
 
 import org.aesh.readline.completion.CompleteOperation;
 import org.aesh.terminal.formatting.TerminalString;
@@ -10,8 +10,8 @@ import org.aesh.terminal.formatting.TerminalString;
 import java.nio.file.*;
 import java.util.*;
 
-/** Assert-based test suite for the JBang REPL. No framework; run with: jbang jbang_replTest.java */
-public class jbang_replTest {
+/** Assert-based test suite for the JBang REPL. No framework; run with: jbang replTest.java */
+public class replTest {
     static int pass, fail;
     static final List<String> failures = new ArrayList<>();
 
@@ -407,11 +407,11 @@ public class jbang_replTest {
             assertListContains(co.candidates, "--class-path");
         });
         test("solrQuery builds prefix queries", () -> {
-            eq("g:dev.jb*", jbang_repl.solrQuery("dev.jb"));
-            eq("a:jack*", jbang_repl.solrQuery("jack"));
-            eq("a:jackson-databind*", jbang_repl.solrQuery("jackson-databind"));
-            eq("g:dev.jbang* AND a:jb*", jbang_repl.solrQuery("dev.jbang:jb"));
-            eq("g:dev.jbang* AND a:*", jbang_repl.solrQuery("dev.jbang:"));
+            eq("g:dev.jb*", repl.solrQuery("dev.jb"));
+            eq("a:jack*", repl.solrQuery("jack"));
+            eq("a:jackson-databind*", repl.solrQuery("jackson-databind"));
+            eq("g:dev.jbang* AND a:jb*", repl.solrQuery("dev.jbang:jb"));
+            eq("g:dev.jbang* AND a:*", repl.solrQuery("dev.jbang:"));
         });
         if ("1".equals(System.getenv("REPL_NET_TESTS"))) {
             test("/deps add completes Maven coordinates (network)", () -> {
@@ -455,11 +455,11 @@ public class jbang_replTest {
     }
 
     // ---- harness ----
-    record Rig(jbang_repl repl, List<String> out) {}
+    record Rig(repl repl, List<String> out) {}
 
     static Rig repl() {
         List<String> out = new ArrayList<>();
-        return new Rig(new jbang_repl(out::add), out);
+        return new Rig(new repl(out::add), out);
     }
 
     interface Body { void run() throws Exception; }

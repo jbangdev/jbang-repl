@@ -62,7 +62,7 @@ The `.syntaxHighlighter(...)` method above is **proposed**, not present in aesh 
 
 ## Interim workaround in 3.14: CursorListener + Line.colorize
 
-aesh 3.14 already ships a partial path that needs no upstream change, wired in `jbang_repl.java` (`colorize(Line)`):
+aesh 3.14 already ships a partial path that needs no upstream change, wired in `repl.java` (`colorize(Line)`):
 
 ```java
 ReadlineRequest.builder()
