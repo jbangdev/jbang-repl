@@ -2,7 +2,7 @@
 //JAVA 21+
 //DEPS org.aesh:readline:3.14
 //DEPS org.aesh:terminal-tty:3.14
-//SOURCES repl.java
+//SOURCES ../src/repl.java
 
 import org.aesh.readline.completion.CompleteOperation;
 import org.aesh.terminal.formatting.TerminalString;

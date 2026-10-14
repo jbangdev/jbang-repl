@@ -7,10 +7,10 @@ A Java REPL backed by the public JShell API and using **aesh-readline** (not JLi
 Requires JBang on `PATH` and JDK 21+.
 
 ```sh
-jbang repl.java
+jbang src/repl.java
 ```
 
-Or install with `jbang app install --name jbang-repl repl.java` (the helper is also embedded in the single-file JBang source). This is an **experimental prototype**, not an upstream JBang command.
+Or install with `jbang app install --name jbang-repl src/repl.java` (the helper is also embedded in the single-file JBang source). This is an **experimental prototype**, not an upstream JBang command.
 
 Use Java expressions, `/deps add`, `/vars`, `/list`, `/save`, `/exit`.
 
