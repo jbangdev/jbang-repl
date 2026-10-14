@@ -1,12 +1,7 @@
 ///usr/bin/env jbang "$0" "$@" ; exit $?
 //JAVA 21+
-//REPOS central
-//REPOS sonatype-snapshots=https://central.sonatype.com/repository/maven-snapshots/
 //DEPS org.aesh:readline:3.14
 //DEPS org.aesh:terminal-tty:3.14
-//DEPS dev.tamboui:tamboui-widgets:0.7.0-SNAPSHOT
-//DEPS dev.tamboui:tamboui-tui:0.7.0-SNAPSHOT
-//DEPS dev.tamboui:tamboui-aesh-backend:0.7.0-SNAPSHOT
 //RUNTIME_OPTIONS --enable-native-access=ALL-UNNAMED
 
 import jdk.jshell.JShell;
@@ -23,24 +18,7 @@ import org.aesh.readline.ReadlineRequest;
 import org.aesh.readline.cursor.Line;
 import org.aesh.terminal.formatting.Color;
 
-import dev.tamboui.backend.aesh.AeshBackend;
-import dev.tamboui.terminal.AbstractBackend;
-import dev.tamboui.layout.Size;
-import dev.tamboui.layout.Position;
-import dev.tamboui.tui.InlineTuiRunner;
-import dev.tamboui.tui.InlineTuiConfig;
-import dev.tamboui.tui.event.Event;
-import dev.tamboui.tui.event.KeyEvent;
-import dev.tamboui.tui.event.KeyCode;
-import dev.tamboui.widgets.list.ListWidget;
-import dev.tamboui.widgets.list.ListState;
-import dev.tamboui.style.Style;
-
 import java.io.*;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
@@ -52,9 +30,6 @@ public class jbang_repl implements AutoCloseable {
     private ReplSyntaxHighlighter syntaxHighlighter = new ReplSyntaxHighlighter(jshell);
     private final Readline readline;
     private final TerminalConnection connection;
-    private AeshBackend out;                 // owns the single connection reader (interactive only)
-    private final CountDownLatch done = new CountDownLatch(1);
-    private volatile boolean pickerPending;  // set when a command launches an async TUI picker
     private final java.util.function.Consumer<String> sink;
     private final List<String> dependencies = new ArrayList<>();
     private final List<String> resolvedJars = new ArrayList<>();
@@ -63,13 +38,12 @@ public class jbang_repl implements AutoCloseable {
     private final StringBuilder pending = new StringBuilder();
     private boolean exitRequested;
     private int exitCode;
-    private long lastInterrupt;               // for Ctrl-C double-tap confirm
+    private long lastInterrupt;   // Ctrl-C double-tap confirm
     private boolean interruptArmed;
     private String feedbackMode = "normal";
 
     public jbang_repl() throws IOException {
         connection = new TerminalConnection();
-        out = new AeshBackend(connection); // starts the single reader (openNonBlocking)
         readline = ReadlineBuilder.builder().build();
         sink = s -> connection.write(s + "\n");
         // Ctrl-C arrives as SIGINT (native signals), not a raw byte. Confirm before quitting.
@@ -113,7 +87,7 @@ public class jbang_repl implements AutoCloseable {
             System.out.println("JBang REPL (aesh + JShell, Java " + Runtime.version().feature() + ")");
             System.out.println("Enter Java or /help. Ctrl-D to exit.");
             repl.next();
-            repl.done.await(); // the AeshBackend reader thread drives readline; block here until exit
+            repl.connection.openBlocking();
             if (repl.exitRequested && repl.exitCode != 0) System.exit(repl.exitCode);
         }
     }
@@ -156,116 +130,13 @@ public class jbang_repl implements AutoCloseable {
         }
     }
 
-    /** Search Maven Central; interactive => TUI picker, headless => numbered list for /deps add <#>. */
+    /** Search Maven Central and present a numbered list for /deps add <#>. */
     private void depsSearch(String query) {
-        if (connection == null || out == null) { // headless/non-interactive fallback
-            lastSearch.clear();
-            lastSearch.addAll(gavSearch(query));
-            if (lastSearch.isEmpty()) { show("No matches for " + query); return; }
-            for (int i = 0; i < lastSearch.size(); i++) show("  " + (i + 1) + ") " + lastSearch.get(i));
-            show("Add one with: /deps add <#>");
-            return;
-        }
-        // Interactive: run the picker on a worker thread so the reader keeps feeding it.
-        pickerPending = true;
-        Thread worker = new Thread(() -> {
-            try {
-                List<String> candidates = gavSearch(query);
-                if (candidates.isEmpty()) { show("No matches for " + query); return; }
-                String picked = runGavPicker(candidates);
-                if (picked == null) show("Cancelled.");
-                else addDependency(picked);
-            } catch (Exception e) {
-                show("Picker error: " + e.getMessage());
-            } finally {
-                if (!exitRequested) next(); // re-arm readline (resets stdinHandler to aesh)
-            }
-        }, "deps-picker");
-        worker.setDaemon(true);
-        worker.start();
-    }
-
-    /** Inline TamboUI picker over the shared aesh connection; returns the chosen GAV or null. */
-    private String runGavPicker(List<String> candidates) throws IOException {
-        String[] result = {null};
-        int height = Math.min(candidates.size(), 10);
-        BlockingQueue<Integer> q = new LinkedBlockingQueue<>();
-        connection.setStdinHandler(ints -> { for (int cp : ints) q.offer(cp); });
-        QueueBackend qb = new QueueBackend(out, q);
-        InlineTuiRunner runner = InlineTuiRunner.create(qb, InlineTuiConfig.defaults(height));
-        ListState state = new ListState();
-        state.select(0);
-        ListWidget list = ListWidget.builder()
-                .items(candidates.toArray(new String[0]))
-                .highlightSymbol("> ")
-                .highlightStyle(Style.EMPTY.fg(dev.tamboui.style.Color.BLACK).bg(dev.tamboui.style.Color.CYAN))
-                .build();
-        try {
-            runner.run(
-                (Event ev, InlineTuiRunner r) -> {
-                    if (ev instanceof KeyEvent k) {
-                        if (k.isDown()) { state.selectNext(candidates.size()); return true; }
-                        if (k.isUp())   { state.selectPrevious(); return true; }
-                        if (k.isKey(KeyCode.ENTER)) {
-                            Integer sel = state.selected();
-                            result[0] = candidates.get(sel == null ? 0 : sel);
-                            r.quit(); return true;
-                        }
-                        if (k.isKey(KeyCode.ESCAPE) || k.isCtrlC()) { r.quit(); return true; }
-                    }
-                    return false;
-                },
-                (frame) -> frame.renderStatefulWidget(list, frame.area(), state)
-            );
-        } catch (Exception e) {
-            throw new IOException(e);
-        } finally {
-            runner.close();
-        }
-        return result[0];
-    }
-
-    /** TamboUI backend: output delegates to the shared AeshBackend; input from a swappable queue. */
-    private static final class QueueBackend extends AbstractBackend {
-        private final AeshBackend out;
-        private final BlockingQueue<Integer> q;
-        private int peeked = -2;
-        QueueBackend(AeshBackend out, BlockingQueue<Integer> q) { this.out = out; this.q = q; }
-        public void flush() throws IOException { out.flush(); }
-        public void clear() throws IOException { out.clear(); }
-        public Size size() throws IOException { return out.size(); }
-        public void showCursor() throws IOException { out.showCursor(); }
-        public void hideCursor() throws IOException { out.hideCursor(); }
-        public Position getCursorPosition() throws IOException { return out.getCursorPosition(); }
-        public void enterAlternateScreen() throws IOException { out.enterAlternateScreen(); }
-        public void leaveAlternateScreen() throws IOException { out.leaveAlternateScreen(); }
-        public void enableRawMode() throws IOException { out.enableRawMode(); }
-        public void disableRawMode() throws IOException { out.disableRawMode(); }
-        public void onResize(Runnable r) { out.onResize(r); }
-        public void writeRaw(String s) throws IOException { out.writeRaw(s); }
-        public void writeRaw(byte[] b) throws IOException { out.writeRaw(b); }
-        public void writeRaw(CharSequence c) throws IOException { out.writeRaw(c.toString()); }
-        public void moveCursorUp(int n) throws IOException { out.moveCursorUp(n); }
-        public void moveCursorDown(int n) throws IOException { out.moveCursorDown(n); }
-        public void moveCursorLeft(int n) throws IOException { out.moveCursorLeft(n); }
-        public void moveCursorRight(int n) throws IOException { out.moveCursorRight(n); }
-        public void eraseToEndOfLine() throws IOException { out.eraseToEndOfLine(); }
-        public void carriageReturn() throws IOException { out.carriageReturn(); }
-        public void insertLines(int n) throws IOException { out.insertLines(n); }
-        public void deleteLines(int n) throws IOException { out.deleteLines(n); }
-        public void scrollUp(int n) throws IOException { out.scrollUp(n); }
-        public void scrollDown(int n) throws IOException { out.scrollDown(n); }
-        public void beginSynchronizedUpdate() throws IOException { out.beginSynchronizedUpdate(); }
-        public void endSynchronizedUpdate() throws IOException { out.endSynchronizedUpdate(); }
-        public int read(int t) throws IOException { if (peeked != -2) { int v = peeked; peeked = -2; return v; } return poll(t); }
-        public int peek(int t) throws IOException { if (peeked == -2) peeked = poll(t); return peeked; }
-        private int poll(int t) {
-            try {
-                Integer c = t < 0 ? q.take() : t == 0 ? q.poll() : q.poll(t, TimeUnit.MILLISECONDS);
-                return c == null ? -2 : c;
-            } catch (InterruptedException e) { Thread.currentThread().interrupt(); return -2; }
-        }
-        public void close() { /* shared out closed by the app */ }
+        lastSearch.clear();
+        lastSearch.addAll(gavSearch(query));
+        if (lastSearch.isEmpty()) { show("No matches for " + query); return; }
+        for (int i = 0; i < lastSearch.size(); i++) show("  " + (i + 1) + ") " + lastSearch.get(i));
+        show("Add one with: /deps add <#>");
     }
 
     /** Candidate first-arguments for a /command: static flags/subcommands plus dynamic snippet names. */
@@ -363,15 +234,13 @@ public class jbang_repl implements AutoCloseable {
                 .completions(completions)
                 .cursorListener(this::colorize)
                 .requestHandler(line -> {
-                    if (line == null) { exitRequested = true; connection.close(); done.countDown(); return; }
-                    pickerPending = false;
+                    if (line == null) { connection.close(); return; }
                     try {
                         accept(line);
                     } catch (Exception ex) {
                         show("Error: " + ex.getMessage());
                     }
-                    // Don't re-arm on a closed connection, or when a picker worker will re-arm.
-                    if (!exitRequested && !pickerPending) next();
+                    if (!exitRequested) next(); // don't re-arm readline on a closed connection
 
                 })
                 .build();
@@ -634,7 +503,6 @@ public class jbang_repl implements AutoCloseable {
         exitRequested = true;
         if (args.length > 1) try { exitCode = Integer.parseInt(args[1].strip()); } catch (NumberFormatException ignored) {}
         if (connection != null) connection.close();
-        done.countDown();
     }
 
     private void helpTopic(String topic) {
