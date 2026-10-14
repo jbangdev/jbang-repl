@@ -17,6 +17,19 @@ import org.aesh.readline.ReadlineRequest;
 import org.aesh.readline.cursor.Line;
 import org.aesh.terminal.formatting.Color;
 
+import org.aesh.command.Command;
+import org.aesh.command.CommandDefinition;
+import org.aesh.command.CommandResult;
+import org.aesh.command.CommandException;
+import org.aesh.command.CommandRuntime;
+import org.aesh.command.AeshCommandRuntimeBuilder;
+import org.aesh.command.CommandNotFoundException;
+import org.aesh.command.option.Option;
+import org.aesh.command.option.Argument;
+import org.aesh.command.option.Arguments;
+import org.aesh.command.invocation.CommandInvocation;
+import org.aesh.command.impl.registry.AeshCommandRegistryBuilder;
+
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
@@ -40,16 +53,47 @@ public class repl implements AutoCloseable {
     private long lastInterrupt;   // Ctrl-C double-tap confirm
     private boolean interruptArmed;
     private String feedbackMode = "normal";
+    private CommandRuntime<?> runtime;
 
     public repl() throws IOException {
         connection = new TerminalConnection();
         readline = ReadlineBuilder.builder().completionHandler(new DocHandler()).build();
         sink = s -> connection.write(s + "\n");
+        buildCommandRuntime();
         // Ctrl-C arrives as SIGINT (native signals), not a raw byte. Confirm before quitting.
         connection.setSignalHandler(sig -> {
             if (sig == org.aesh.terminal.tty.Signal.INT && handleInterrupt(System.currentTimeMillis()))
-                doExit(new String[]{"exit"});
+                doExit(null);
         });
+    }
+
+    /** Register every slash command as an aesh @Command and build the runtime. */
+    private void buildCommandRuntime() {
+        try {
+            var reg = AeshCommandRegistryBuilder.builder()
+                    .command(new ExitCmd())
+                    .command(new HelpCmd())
+                    .command(new ClearCmd())
+                    .command(new ListCmd())
+                    .command(new VarsCmd())
+                    .command(new MethodsCmd())
+                    .command(new TypesCmd())
+                    .command(new ImportsCmd())
+                    .command(new DropCmd())
+                    .command(new ResetCmd())
+                    .command(new ReloadCmd())
+                    .command(new HistoryCmd())
+                    .command(new SaveCmd())
+                    .command(new OpenCmd())
+                    .command(new SetCmd())
+                    .command(new EnvCmd())
+                    .command(new EditCmd())
+                    .command(new DepsCmd())
+                    .create();
+            runtime = AeshCommandRuntimeBuilder.builder().commandRegistry(reg).build();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to build command runtime", e);
+        }
     }
 
     /** Two-stage Ctrl-C: first asks, a second within 3s confirms. Returns true to quit. */
@@ -67,6 +111,7 @@ public class repl implements AutoCloseable {
         connection = null;
         readline = null;
         this.sink = sink;
+        buildCommandRuntime();
     }
 
     public static void main(String[] args) throws Exception {
@@ -100,32 +145,21 @@ public class repl implements AutoCloseable {
     private final List<String> lastSearch = new ArrayList<>();
     private static final String GAV_RE = "[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+:[^ ]+";
 
-    private void doDeps(String[] args) throws Exception {
-        String usage = "Usage: /deps add <GAV|query|#>, /deps search <query>, /deps list";
-        if (args.length < 2) { show(usage); return; }
-        switch (args[1]) {
-            case "list" -> {
-                if (dependencies.isEmpty()) show("No added dependencies.");
-                dependencies.forEach(this::show);
-            }
-            case "search" -> {
-                if (args.length < 3) { show("Usage: /deps search <query>"); return; }
-                depsSearch(args[2].strip());
-            }
-            case "add" -> {
-                if (args.length < 3) { show("Usage: /deps add <GAV|query|#>"); return; }
-                String arg = args[2].strip();
-                if (arg.matches("\\d+")) {
-                    int n = Integer.parseInt(arg);
-                    if (n < 1 || n > lastSearch.size()) { show("No result #" + n + ". Run /deps search first."); return; }
-                    addDependency(lastSearch.get(n - 1));
-                } else if (arg.matches(GAV_RE)) {
-                    addDependency(arg);
-                } else {
-                    depsSearch(arg); // not a full GAV => search and offer a numbered list
-                }
-            }
-            default -> show(usage);
+    private void depsList() {
+        if (dependencies.isEmpty()) show("No added dependencies.");
+        dependencies.forEach(this::show);
+    }
+
+    private void depsAdd(String arg) throws Exception {
+        arg = arg.strip();
+        if (arg.matches("\\d+")) {
+            int n = Integer.parseInt(arg);
+            if (n < 1 || n > lastSearch.size()) { show("No result #" + n + ". Run /deps search first."); return; }
+            addDependency(lastSearch.get(n - 1));
+        } else if (arg.matches(GAV_RE)) {
+            addDependency(arg);
+        } else {
+            depsSearch(arg); // not a full GAV => search and offer a numbered list
         }
     }
 
@@ -423,32 +457,166 @@ public class repl implements AutoCloseable {
 
     void command(String text) throws Exception {
         String t = text.strip();
-        // Rerun forms: /! last, /-N nth previous, /ID or /ID-ID by id.
+        // Rerun forms and '?' aren't valid aesh command names; handle them first.
         if (t.equals("!")) { rerunLast(); return; }
         if (t.matches("-\\d+")) { rerunPrevious(Integer.parseInt(t.substring(1))); return; }
         if (t.matches("\\d+(-\\d+)?")) { rerunIds(t); return; }
         if (t.startsWith("?")) { helpTopic(t.substring(1).strip()); return; }
-        String[] args = t.split("\\s+", 3);
-        switch (args[0]) {
-            case "exit", "quit" -> doExit(args);
-            case "help" -> helpTopic(args.length > 1 ? args[1] : "");
-            case "clear" -> { pending.setLength(0); show("Input buffer cleared."); }
-            case "list" -> listSnippets(args);
-            case "vars" -> listVars(args);
-            case "methods" -> listMethods(args);
-            case "types" -> listTypes(args);
-            case "imports" -> jshell.imports().forEach(i -> show("  " + i.source()));
-            case "drop" -> dropSnippets(args);
-            case "reset" -> doReset();
-            case "reload" -> doReload(args);
-            case "history" -> history.forEach(this::show);
-            case "save" -> doSave(args);
-            case "open" -> doOpen(args);
-            case "set" -> doSet(args);
-            case "env" -> doEnv(args);
-            case "edit" -> doEdit(args);
-            case "deps" -> doDeps(args);
-            default -> show("Unknown command /" + args[0] + ". Try /help");
+        try {
+            runtime.executeCommand(t);
+        } catch (CommandNotFoundException e) {
+            show("Unknown command /" + t.split("\\s+", 2)[0] + ". Try /help");
+        } catch (Exception e) {
+            show(e.getMessage() == null ? e.toString() : e.getMessage());
+        }
+    }
+
+    // ---- aesh @Command wrappers (parsing/validation/help) delegating to the helpers below ----
+
+    @CommandDefinition(name = "exit", aliases = {"quit"}, description = "exit the REPL")
+    public final class ExitCmd implements Command<CommandInvocation> {
+        @Argument(description = "exit code")
+        Integer code;
+        public CommandResult execute(CommandInvocation ci) { doExit(code); return CommandResult.SUCCESS; }
+    }
+
+    @CommandDefinition(name = "help", description = "get information about commands")
+    public final class HelpCmd implements Command<CommandInvocation> {
+        @Argument(description = "command")
+        String topic;
+        public CommandResult execute(CommandInvocation ci) { helpTopic(topic == null ? "" : topic); return CommandResult.SUCCESS; }
+    }
+
+    @CommandDefinition(name = "clear", description = "clear the pending input buffer")
+    public final class ClearCmd implements Command<CommandInvocation> {
+        public CommandResult execute(CommandInvocation ci) { pending.setLength(0); show("Input buffer cleared."); return CommandResult.SUCCESS; }
+    }
+
+    @CommandDefinition(name = "list", description = "list source you have typed (-all or <name>)")
+    public final class ListCmd implements Command<CommandInvocation> {
+        @Arguments(description = "-all | <name>")
+        List<String> args;
+        public CommandResult execute(CommandInvocation ci) {
+            boolean all = args != null && args.contains("-all");
+            String name = (args == null) ? null : args.stream().filter(a -> !a.startsWith("-")).findFirst().orElse(null);
+            listSnippets(all, name);
+            return CommandResult.SUCCESS;
+        }
+    }
+
+    @CommandDefinition(name = "vars", description = "list declared variables")
+    public final class VarsCmd implements Command<CommandInvocation> {
+        @Argument(description = "variable name")
+        String name;
+        public CommandResult execute(CommandInvocation ci) { listVars(name); return CommandResult.SUCCESS; }
+    }
+
+    @CommandDefinition(name = "methods", description = "list declared methods")
+    public final class MethodsCmd implements Command<CommandInvocation> {
+        @Argument(description = "method name")
+        String name;
+        public CommandResult execute(CommandInvocation ci) { listMethods(name); return CommandResult.SUCCESS; }
+    }
+
+    @CommandDefinition(name = "types", description = "list declared types")
+    public final class TypesCmd implements Command<CommandInvocation> {
+        @Argument(description = "type name")
+        String name;
+        public CommandResult execute(CommandInvocation ci) { listTypes(name); return CommandResult.SUCCESS; }
+    }
+
+    @CommandDefinition(name = "imports", description = "list imported items")
+    public final class ImportsCmd implements Command<CommandInvocation> {
+        public CommandResult execute(CommandInvocation ci) { jshell.imports().forEach(i -> show("  " + i.source())); return CommandResult.SUCCESS; }
+    }
+
+    @CommandDefinition(name = "drop", description = "delete a snippet")
+    public final class DropCmd implements Command<CommandInvocation> {
+        @Argument(description = "snippet name or id", required = true)
+        String target;
+        public CommandResult execute(CommandInvocation ci) { dropSnippets(target); return CommandResult.SUCCESS; }
+    }
+
+    @CommandDefinition(name = "reset", description = "reset the REPL state")
+    public final class ResetCmd implements Command<CommandInvocation> {
+        public CommandResult execute(CommandInvocation ci) { doReset(); return CommandResult.SUCCESS; }
+    }
+
+    @CommandDefinition(name = "reload", description = "reset and replay history (-quiet)")
+    public final class ReloadCmd implements Command<CommandInvocation> {
+        @Arguments(description = "-quiet")
+        List<String> args;
+        public CommandResult execute(CommandInvocation ci) { doReload(args != null && args.contains("-quiet")); return CommandResult.SUCCESS; }
+    }
+
+    @CommandDefinition(name = "history", description = "history of what you have typed")
+    public final class HistoryCmd implements Command<CommandInvocation> {
+        public CommandResult execute(CommandInvocation ci) { history.forEach(repl.this::show); return CommandResult.SUCCESS; }
+    }
+
+    @CommandDefinition(name = "save", description = "save source to a file ([-all|-history|-start] <file>)")
+    public final class SaveCmd implements Command<CommandInvocation> {
+        @Arguments(description = "[-all|-history|-start] <file>")
+        List<String> args;
+        public CommandResult execute(CommandInvocation ci) {
+            if (args == null || args.isEmpty()) { show("Usage: /save [-all|-history|-start] <file>"); return CommandResult.SUCCESS; }
+            boolean all = args.contains("-all"), hist = args.contains("-history"), start = args.contains("-start");
+            String file = args.stream().filter(a -> !a.startsWith("-")).findFirst().orElse(null);
+            if (file == null) { show("Usage: /save [-all|-history|-start] <file>"); return CommandResult.SUCCESS; }
+            try { doSave(all, hist, start, file); } catch (IOException e) { show("Error: " + e.getMessage()); return CommandResult.FAILURE; }
+            return CommandResult.SUCCESS;
+        }
+    }
+
+    @CommandDefinition(name = "open", description = "open a file as source input")
+    public final class OpenCmd implements Command<CommandInvocation> {
+        @Argument(description = "file", required = true)
+        String file;
+        public CommandResult execute(CommandInvocation ci) {
+            try { doOpen(file); } catch (Exception e) { show("Error: " + e.getMessage()); return CommandResult.FAILURE; }
+            return CommandResult.SUCCESS;
+        }
+    }
+
+    @CommandDefinition(name = "set", description = "set configuration")
+    public final class SetCmd implements Command<CommandInvocation> {
+        @Arguments(description = "<sub> [value]")
+        List<String> args;
+        public CommandResult execute(CommandInvocation ci) { doSet(args); return CommandResult.SUCCESS; }
+    }
+
+    @CommandDefinition(name = "env", description = "view or change the eval context")
+    public final class EnvCmd implements Command<CommandInvocation> {
+        @Option(name = "class-path", description = "add to the classpath")
+        String classPath;
+        public CommandResult execute(CommandInvocation ci) { doEnv(classPath); return CommandResult.SUCCESS; }
+    }
+
+    @CommandDefinition(name = "edit", description = "show snippet source")
+    public final class EditCmd implements Command<CommandInvocation> {
+        @Argument(description = "snippet name or id")
+        String target;
+        public CommandResult execute(CommandInvocation ci) { doEdit(target); return CommandResult.SUCCESS; }
+    }
+
+    @CommandDefinition(name = "deps", description = "manage JBang dependencies (add <GAV|query|#> | search <query> | list)")
+    public final class DepsCmd implements Command<CommandInvocation> {
+        @Arguments(description = "<add|search|list> ...")
+        List<String> args;
+        public CommandResult execute(CommandInvocation ci) {
+            String usage = "Usage: /deps add <GAV|query|#>, /deps search <query>, /deps list";
+            if (args == null || args.isEmpty()) { show(usage); return CommandResult.SUCCESS; }
+            String sub = args.get(0);
+            String rest = args.size() > 1 ? String.join(" ", args.subList(1, args.size())) : "";
+            try {
+                switch (sub) {
+                    case "list" -> depsList();
+                    case "search" -> { if (rest.isBlank()) show("Usage: /deps search <query>"); else depsSearch(rest); }
+                    case "add" -> { if (rest.isBlank()) show("Usage: /deps add <GAV|query|#>"); else depsAdd(rest); }
+                    default -> show(usage);
+                }
+            } catch (Exception e) { show("Error: " + e.getMessage()); return CommandResult.FAILURE; }
+            return CommandResult.SUCCESS;
         }
     }
 
@@ -474,38 +642,36 @@ public class repl implements AutoCloseable {
                 .collect(Collectors.toList());
     }
 
-    private void listSnippets(String[] args) {
-        boolean all = args.length > 1 && "-all".equals(args[1]);
+    private void listSnippets(boolean all, String name) {
         List<Snippet> snippets = all ? allSnippets() : activeSnippets();
-        if (!all && args.length > 1 && !args[1].startsWith("-")) {
-            snippets = select(args[1]);
-            if (snippets.isEmpty()) { show("No such snippet: " + args[1]); return; }
+        if (!all && name != null) {
+            snippets = select(name);
+            if (snippets.isEmpty()) { show("No such snippet: " + name); return; }
         }
         for (Snippet s : snippets) show("  " + s.id() + " : " + s.source().strip());
     }
 
-    private void listVars(String[] args) {
+    private void listVars(String name) {
         jshell.variables()
-                .filter(v -> args.length < 2 || v.name().equals(args[1]))
+                .filter(v -> name == null || v.name().equals(name))
                 .forEach(v -> show("  " + v.typeName() + " " + v.name() + " = " + jshell.varValue(v)));
     }
 
-    private void listMethods(String[] args) {
+    private void listMethods(String name) {
         jshell.methods()
-                .filter(m -> args.length < 2 || m.name().equals(args[1]))
+                .filter(m -> name == null || m.name().equals(name))
                 .forEach(m -> show("  " + m.name() + " " + m.signature()));
     }
 
-    private void listTypes(String[] args) {
+    private void listTypes(String name) {
         jshell.types()
-                .filter(ty -> args.length < 2 || ty.name().equals(args[1]))
+                .filter(ty -> name == null || ty.name().equals(name))
                 .forEach(ty -> show("  " + ty.subKind().name().replace("_SUBKIND", "").toLowerCase(Locale.ROOT) + " " + ty.name()));
     }
 
-    private void dropSnippets(String[] args) {
-        if (args.length < 2) { show("Usage: /drop <name or id>"); return; }
-        List<Snippet> targets = select(args[1]);
-        if (targets.isEmpty()) { show("No such snippet: " + args[1]); return; }
+    private void dropSnippets(String target) {
+        List<Snippet> targets = select(target);
+        if (targets.isEmpty()) { show("No such snippet: " + target); return; }
         for (Snippet s : targets) {
             jshell.drop(s);
             show("Dropped " + s.id());
@@ -526,8 +692,7 @@ public class repl implements AutoCloseable {
         show("Resetting state.");
     }
 
-    private void doReload(String[] args) {
-        boolean quiet = Arrays.asList(args).contains("-quiet");
+    private void doReload(boolean quiet) {
         List<String> replay = new ArrayList<>(acceptedSnippets);
         freshJShell();
         acceptedSnippets.clear();
@@ -536,29 +701,22 @@ public class repl implements AutoCloseable {
         for (String src : replay) runSource(src);
     }
 
-    private void doSave(String[] args) throws IOException {
-        if (args.length < 2) { show("Usage: /save [-all|-history|-start] <file>"); return; }
-        String mode = args[1].startsWith("-") ? args[1] : "";
-        String fileName = mode.isEmpty() ? args[1] : (args.length > 2 ? args[2] : null);
-        if (fileName == null) { show("Usage: /save [-all|-history|-start] <file>"); return; }
+    private void doSave(boolean all, boolean hist, boolean start, String fileName) throws IOException {
         Path file = Path.of(fileName);
         List<String> lines = new ArrayList<>();
-        switch (mode) {
-            case "-history" -> lines.addAll(history);
-            case "-all" -> allSnippets().forEach(s -> lines.add(s.source().strip()));
-            case "-start" -> { /* no startup script configured */ }
-            default -> {
-                for (String gav : dependencies) lines.add("//DEPS " + gav);
-                lines.addAll(acceptedSnippets);
-            }
+        if (hist) lines.addAll(history);
+        else if (all) allSnippets().forEach(s -> lines.add(s.source().strip()));
+        else if (start) { /* no startup script configured */ }
+        else {
+            for (String gav : dependencies) lines.add("//DEPS " + gav);
+            lines.addAll(acceptedSnippets);
         }
         Files.writeString(file, String.join("\n", lines) + (lines.isEmpty() ? "" : "\n"), StandardCharsets.UTF_8);
         show("Saved to " + file);
     }
 
-    private void doOpen(String[] args) throws Exception {
-        if (args.length < 2) { show("Usage: /open <file>"); return; }
-        Path file = Path.of(args[1]);
+    private void doOpen(String fileName) throws Exception {
+        Path file = Path.of(fileName);
         if (!Files.exists(file)) { show("No such file: " + file); return; }
         for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) accept(line);
     }
@@ -585,43 +743,41 @@ public class repl implements AutoCloseable {
         if (!any) show("No such snippet: " + token);
     }
 
-    private void doSet(String[] args) {
-        if (args.length < 2) { show("Settings: feedback " + feedbackMode); return; }
-        switch (args[1]) {
+    private void doSet(List<String> args) {
+        if (args == null || args.isEmpty()) { show("Settings: feedback " + feedbackMode); return; }
+        String sub = args.get(0);
+        switch (sub) {
             case "feedback" -> {
-                if (args.length > 2) { feedbackMode = args[2].strip(); show("Feedback mode: " + feedbackMode); }
+                if (args.size() > 1) { feedbackMode = args.get(1).strip(); show("Feedback mode: " + feedbackMode); }
                 else show("Feedback mode: " + feedbackMode);
             }
-            case "start", "editor", "mode", "prompt", "truncation" -> show("/set " + args[1] + " is not configurable in this REPL.");
+            case "start", "editor", "mode", "prompt", "truncation" -> show("/set " + sub + " is not configurable in this REPL.");
             default -> show("Usage: /set feedback <mode>");
         }
     }
 
-    private void doEnv(String[] args) {
-        if (args.length < 2) {
+    private void doEnv(String classPath) {
+        if (classPath == null) {
             if (resolvedJars.isEmpty()) show("No additional classpath.");
             else resolvedJars.forEach(j -> show("  --class-path " + j));
             return;
         }
-        if (args[1].equals("--class-path") || args[1].equals("-class-path")) {
-            if (args.length < 3) { show("Usage: /env --class-path <path>"); return; }
-            for (String jar : args[2].split(java.util.regex.Pattern.quote(File.pathSeparator))) {
-                if (!jar.isBlank()) { jshell.addToClasspath(jar); resolvedJars.add(jar); }
-            }
-            show("Setting new options and restoring state.");
-        } else show("Usage: /env [--class-path <path>]");
+        for (String jar : classPath.split(java.util.regex.Pattern.quote(File.pathSeparator))) {
+            if (!jar.isBlank()) { jshell.addToClasspath(jar); resolvedJars.add(jar); }
+        }
+        show("Setting new options and restoring state.");
     }
 
-    private void doEdit(String[] args) {
+    private void doEdit(String target) {
         // Headless REPL: no external editor; show the snippet source instead.
-        List<Snippet> snippets = args.length > 1 ? select(args[1]) : activeSnippets();
-        if (snippets.isEmpty()) { show("No such snippet" + (args.length > 1 ? ": " + args[1] : ".")); return; }
+        List<Snippet> snippets = target != null ? select(target) : activeSnippets();
+        if (snippets.isEmpty()) { show("No such snippet" + (target != null ? ": " + target : ".")); return; }
         for (Snippet s : snippets) show(s.source().strip());
     }
 
-    private void doExit(String[] args) {
+    private void doExit(Integer code) {
         exitRequested = true;
-        if (args.length > 1) try { exitCode = Integer.parseInt(args[1].strip()); } catch (NumberFormatException ignored) {}
+        if (code != null) exitCode = code;
         if (connection != null) connection.close();
     }
 
