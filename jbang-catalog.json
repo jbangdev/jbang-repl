@@ -1,0 +1,8 @@
+{
+  "aliases": {
+    "repl": {
+      "script-ref": "src/repl.java",
+      "description": "Interactive Java REPL (aesh + JShell) with syntax highlighting, tab completion, jshell-style commands and /deps."
+    }
+  }
+}
