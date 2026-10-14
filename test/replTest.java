@@ -1,7 +1,6 @@
 ///usr/bin/env jbang "$0" "$@" ; exit $?
 //JAVA 21+
-//DEPS org.aesh:readline:3.14
-//DEPS org.aesh:terminal-tty:3.14
+//DEPS org.aesh:aesh:3.18.4
 //SOURCES ../src/repl.java
 
 import org.aesh.readline.completion.CompleteOperation;
