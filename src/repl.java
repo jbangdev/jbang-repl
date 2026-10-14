@@ -232,12 +232,27 @@ public class repl implements AutoCloseable {
         List<String> lines = documentationLines(code, cursor, javadoc);
         if (lines.isEmpty()) { lastDocKey = null; return false; }
         StringBuilder sb = new StringBuilder("\r\n");
-        for (String l : lines) sb.append(l).append("\r\n");
+        for (String l : lines) sb.append(colorDocLine(l)).append("\r\n");
         cb.writeOut(sb.toString());
         cb.drawLineForceDisplay();
         lastDocKey = key;
         docJavadocNext = !javadoc;
         return true;
+    }
+
+    private static final String DOC_HDR = "\u001b[1;33m";   // bold yellow: section headers
+    private static final String DOC_SIG = "\u001b[1;36m";   // bold cyan: method signatures
+    private static final String DOC_DIM = "\u001b[90m";     // grey: the hint
+    private static final String DOC_RST = "\u001b[0m";
+
+    /** Apply ANSI colour to one documentation line based on its role. */
+    static String colorDocLine(String l) {
+        if (l.equals("Parameters:") || l.equals("Returns:") || l.equals("Thrown Exceptions:"))
+            return DOC_HDR + l + DOC_RST;
+        if (l.startsWith("<press tab")) return DOC_DIM + l + DOC_RST;
+        if (!l.isEmpty() && !l.startsWith(" ") && l.contains("(") && l.contains(")"))
+            return DOC_SIG + l + DOC_RST;   // signature line
+        return l;
     }
 
     /** Signature(s) and, when javadoc=true, a jshell-style formatted javadoc body. */

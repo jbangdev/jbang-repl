@@ -365,6 +365,12 @@ public class replTest {
             assertNoneContains(lines, "{@code");
             assertNoneContains(lines, "press tab again");
         });
+        test("colorDocLine colors headers, signatures, hint", () -> {
+            assertStr(repl.colorDocLine("Parameters:"), "\u001b[1;33m");
+            assertStr(repl.colorDocLine("Optional<T> X.of(long p)"), "\u001b[1;36m");
+            assertStr(repl.colorDocLine("<press tab again to see documentation>"), "\u001b[90m");
+            eq("    pid - a native process ID", repl.colorDocLine("    pid - a native process ID"));
+        });
         test("formatJavadoc strips inline tags and wraps", () -> {
             var out = repl.formatJavadoc("Returns an {@code Optional} value.\n@param x the {@link Thing}\n@return the result");
             assertListContains(out, "Returns an Optional value.");
