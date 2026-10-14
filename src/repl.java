@@ -193,13 +193,45 @@ public class repl implements AutoCloseable {
         String code = prefix + co.getBuffer();
         int cursor = prefix.length() + co.getCursor();
         int[] anchor = new int[1];
+        // At an argument position (cursor right after '(' or ','), prefer signature help like jshell.
+        int c = cursor - 1;
+        while (c >= 0 && code.charAt(c) == ' ') c--;
+        boolean argPos = c >= 0 && (code.charAt(c) == '(' || code.charAt(c) == ',');
+        if (argPos && showDocumentation(co, code, cursor)) return;
+
         var suggestions = jshell.sourceCodeAnalysis().completionSuggestions(code, cursor, anchor);
-        if (suggestions.isEmpty()) return;
+        if (suggestions.isEmpty()) { showDocumentation(co, code, cursor); return; }
+        lastDocKey = null;
         co.setOffset(anchor[0] - prefix.length());
         co.setAppendSeparator(false); // no trailing space; allow typing '.' or completing further
         co.setSeparator('\0');
         suggestions.stream().map(SourceCodeAnalysis.Suggestion::continuation).distinct()
                 .forEach(co::addCompletionCandidate);
+    }
+
+    private String lastDocKey;       // code+cursor of the last documentation request
+    private boolean docJavadocNext;  // next Tab at the same spot shows javadoc
+
+    /** jshell-style signature help: first Tab shows signatures, a second shows javadoc. Returns true if shown. */
+    boolean showDocumentation(CompleteOperation co, String code, int cursor) {
+        String key = cursor + ":" + code;
+        boolean javadoc = key.equals(lastDocKey) && docJavadocNext;
+        var docs = jshell.sourceCodeAnalysis().documentation(code, cursor, javadoc);
+        if (docs.isEmpty()) { lastDocKey = null; return false; }
+        co.setOffset(co.getCursor());   // replace nothing; display-only
+        co.setAppendSeparator(false);
+        co.setIgnoreStartsWith(true);   // never insert into the buffer
+        List<String> lines = new ArrayList<>();
+        for (var d : docs) {
+            lines.add(d.signature());
+            if (javadoc && d.javadoc() != null && !d.javadoc().isBlank())
+                for (String l : d.javadoc().strip().split("\n")) lines.add("    " + l);
+        }
+        if (!javadoc) lines.add("<press tab again to see documentation>");
+        lines.forEach(co::addCompletionCandidate);
+        lastDocKey = key;
+        docJavadocNext = !javadoc;      // toggle for the next Tab at the same spot
+        return true;
     }
 
     private final List<Completion> completions = List.<Completion>of(new Completion<CompleteOperation>() {

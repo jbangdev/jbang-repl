@@ -345,6 +345,25 @@ public class replTest {
             r.repl.complete(co);
             assertListContains(co.candidates, "/vars");
         });
+        test("signature help on open paren", () -> {
+            var r = repl();
+            String code = "ProcessHandle.of(";
+            var co = new FakeComplete(code, code.length());
+            r.repl.showDocumentation(co, code, code.length());
+            assertListContains(co.candidates, "ProcessHandle.of(long pid)");
+            assertListContains(co.candidates, "press tab again");
+        });
+        test("second tab shows javadoc", () -> {
+            var r = repl();
+            String code = "ProcessHandle.of(";
+            var co1 = new FakeComplete(code, code.length());
+            r.repl.showDocumentation(co1, code, code.length());   // signatures
+            var co2 = new FakeComplete(code, code.length());
+            r.repl.showDocumentation(co2, code, code.length());   // same spot -> javadoc
+            assertNoneContains(co2.candidates, "press tab again");
+            if (co2.candidates.size() <= co1.candidates.size())
+                throw new AssertionError("expected javadoc to add lines: " + co2.candidates);
+        });
         test("java member completion", () -> {
             var r = repl();
             var co = new FakeComplete("System.out.pri", 14);
