@@ -306,6 +306,17 @@ public class jbang_replTest {
             eq(true, r.repl.isExitRequested());
             eq(3, r.repl.exitCode());
         });
+        test("Ctrl-C asks first, confirms on second within window", () -> {
+            var r = repl();
+            eq(false, r.repl.handleInterrupt(1000));
+            assertAnyContains(r.out, "Really quit?");
+            eq(true, r.repl.handleInterrupt(2500));   // within 3s
+        });
+        test("Ctrl-C resets after window", () -> {
+            var r = repl();
+            eq(false, r.repl.handleInterrupt(1000));
+            eq(false, r.repl.handleInterrupt(5000));   // >3s later: asks again, no quit
+        });
         test("/quit also exits", () -> {
             var r = repl();
             r.repl.accept("/quit");

@@ -63,6 +63,8 @@ public class jbang_repl implements AutoCloseable {
     private final StringBuilder pending = new StringBuilder();
     private boolean exitRequested;
     private int exitCode;
+    private long lastInterrupt;               // for Ctrl-C double-tap confirm
+    private boolean interruptArmed;
     private String feedbackMode = "normal";
 
     public jbang_repl() throws IOException {
@@ -70,6 +72,21 @@ public class jbang_repl implements AutoCloseable {
         out = new AeshBackend(connection); // starts the single reader (openNonBlocking)
         readline = ReadlineBuilder.builder().build();
         sink = s -> connection.write(s + "\n");
+        // Ctrl-C arrives as SIGINT (native signals), not a raw byte. Confirm before quitting.
+        connection.setSignalHandler(sig -> {
+            if (sig == org.aesh.terminal.tty.Signal.INT && handleInterrupt(System.currentTimeMillis()))
+                doExit(new String[]{"exit"});
+        });
+    }
+
+    /** Two-stage Ctrl-C: first asks, a second within 3s confirms. Returns true to quit. */
+    boolean handleInterrupt(long now) {
+        if (interruptArmed && now - lastInterrupt < 3000) { interruptArmed = false; return true; }
+        interruptArmed = true;
+        lastInterrupt = now;
+        show("");
+        show("Really quit? Press Ctrl-C again to confirm, or keep typing to cancel.");
+        return false;
     }
 
     /** Headless constructor for tests: no terminal, output captured via sink. */
@@ -89,6 +106,10 @@ public class jbang_repl implements AutoCloseable {
                 System.err.println("Unknown arguments: " + String.join(" ", args));
                 System.exit(2);
             }
+            // External kill (SIGTERM) can't prompt; at least restore the terminal on exit.
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                try { if (repl.connection != null) repl.connection.close(); } catch (Exception ignored) {}
+            }));
             System.out.println("JBang REPL (aesh + JShell, Java " + Runtime.version().feature() + ")");
             System.out.println("Enter Java or /help. Ctrl-D to exit.");
             repl.next();
