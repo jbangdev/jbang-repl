@@ -1,6 +1,9 @@
 ///usr/bin/env jbang "$0" "$@" ; exit $?
 //JAVA 21+
 //DEPS org.aesh:aesh:3.18.4
+//SOURCES DocFormat.java
+//SOURCES Maven.java
+//SOURCES ReplSyntaxHighlighter.java
 //RUNTIME_OPTIONS --enable-native-access=ALL-UNNAMED
 
 import jdk.jshell.JShell;
@@ -143,7 +146,6 @@ public class repl implements AutoCloseable {
 
     private static final String DEPS_ADD = "/deps add ";
     private final List<String> lastSearch = new ArrayList<>();
-    private static final String GAV_RE = "[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+:[^ ]+";
 
     private void depsList() {
         if (dependencies.isEmpty()) show("No added dependencies.");
@@ -156,7 +158,7 @@ public class repl implements AutoCloseable {
             int n = Integer.parseInt(arg);
             if (n < 1 || n > lastSearch.size()) { show("No result #" + n + ". Run /deps search first."); return; }
             addDependency(lastSearch.get(n - 1));
-        } else if (arg.matches(GAV_RE)) {
+        } else if (Maven.looksLikeGav(arg)) {
             addDependency(arg);
         } else {
             depsSearch(arg); // not a full GAV => search and offer a numbered list
@@ -265,27 +267,12 @@ public class repl implements AutoCloseable {
         List<String> lines = documentationLines(code, cursor, javadoc);
         if (lines.isEmpty()) { lastDocKey = null; return false; }
         StringBuilder sb = new StringBuilder("\r\n");
-        for (String l : lines) sb.append(colorDocLine(l)).append("\r\n");
+        for (String l : lines) sb.append(DocFormat.colorLine(l)).append("\r\n");
         cb.writeOut(sb.toString());
         cb.drawLineForceDisplay();
         lastDocKey = key;
         docJavadocNext = !javadoc;
         return true;
-    }
-
-    private static final String DOC_HDR = "\u001b[1;33m";   // bold yellow: section headers
-    private static final String DOC_SIG = "\u001b[1;36m";   // bold cyan: method signatures
-    private static final String DOC_DIM = "\u001b[90m";     // grey: the hint
-    private static final String DOC_RST = "\u001b[0m";
-
-    /** Apply ANSI colour to one documentation line based on its role. */
-    static String colorDocLine(String l) {
-        if (l.equals("Parameters:") || l.equals("Returns:") || l.equals("Thrown Exceptions:"))
-            return DOC_HDR + l + DOC_RST;
-        if (l.startsWith("<press tab")) return DOC_DIM + l + DOC_RST;
-        if (!l.isEmpty() && !l.startsWith(" ") && l.contains("(") && l.contains(")"))
-            return DOC_SIG + l + DOC_RST;   // signature line
-        return l;
     }
 
     /** Signature(s) and, when javadoc=true, a jshell-style formatted javadoc body. */
@@ -296,64 +283,11 @@ public class repl implements AutoCloseable {
             lines.add(d.signature());
             if (javadoc && d.javadoc() != null && !d.javadoc().isBlank()) {
                 lines.add("");
-                lines.addAll(formatJavadoc(d.javadoc()));
+                lines.addAll(DocFormat.javadoc(d.javadoc()));
             }
         }
-        if (!lines.isEmpty() && !javadoc) lines.add("<press tab again to see documentation>");
+        if (!lines.isEmpty() && !javadoc) lines.add(DocFormat.HINT);
         return lines;
-    }
-
-    /** Turn raw javadoc (inline + block tags) into readable text like jshell's formatter. */
-    static List<String> formatJavadoc(String javadoc) {
-        // Strip inline tags: {@code X} / {@link X} / {@literal X} -> X
-        String text = javadoc.replaceAll("\\{@\\w+\\s+([^}]*)\\}", "$1").strip();
-        List<String> desc = new ArrayList<>();
-        List<String> params = new ArrayList<>();
-        List<String> returns = new ArrayList<>();
-        List<String> throwsList = new ArrayList<>();
-        List<String> target = desc;
-        for (String raw : text.split("\n")) {
-            String l = raw.strip();
-            if (l.startsWith("@param")) {
-                String[] p = l.substring(6).strip().split("\\s+", 2);
-                params.add(p[0] + (p.length > 1 ? " - " + p[1] : ""));
-                target = params;
-            } else if (l.startsWith("@return")) {
-                returns.add(l.substring(7).strip());
-                target = returns;
-            } else if (l.startsWith("@throws") || l.startsWith("@exception")) {
-                String rest = l.replaceFirst("@(throws|exception)", "").strip();
-                String[] p = rest.split("\\s+", 2);
-                throwsList.add(p[0] + (p.length > 1 ? " - " + p[1] : ""));
-                target = throwsList;
-            } else if (l.startsWith("@")) {
-                target = new ArrayList<>(); // ignore other block tags (@see, @since, ...)
-            } else if (!l.isEmpty()) {
-                if (target.isEmpty()) target.add(l); else target.set(target.size() - 1, target.get(target.size() - 1) + " " + l);
-            }
-        }
-        List<String> out = new ArrayList<>();
-        desc.forEach(d -> out.addAll(wrap(d, "", 76)));
-        if (!params.isEmpty()) { out.add(""); out.add("Parameters:"); params.forEach(p -> out.addAll(wrap(p, "    ", 76))); }
-        if (!returns.isEmpty()) { out.add(""); out.add("Returns:"); returns.forEach(r -> out.addAll(wrap(r, "    ", 76))); }
-        if (!throwsList.isEmpty()) { out.add(""); out.add("Thrown Exceptions:"); throwsList.forEach(t -> out.addAll(wrap(t, "    ", 76))); }
-        return out;
-    }
-
-    /** Word-wrap one paragraph to width, prefixing every line with indent. */
-    static List<String> wrap(String s, String indent, int width) {
-        List<String> out = new ArrayList<>();
-        StringBuilder cur = new StringBuilder(indent);
-        for (String w : s.split("\\s+")) {
-            if (cur.length() > indent.length() && cur.length() + 1 + w.length() > width) {
-                out.add(cur.toString());
-                cur = new StringBuilder(indent);
-            }
-            if (cur.length() > indent.length()) cur.append(' ');
-            cur.append(w);
-        }
-        if (cur.length() > indent.length()) out.add(cur.toString());
-        return out;
     }
 
     private final List<Completion> completions = List.<Completion>of(new Completion<CompleteOperation>() {
@@ -823,29 +757,14 @@ public class repl implements AutoCloseable {
         });
     }
 
-    /** Build a prefix Solr query so partial group/artifact tokens match on search.maven.org. */
-    static String solrQuery(String q) {
-        q = q.strip();
-        if (q.contains(":")) {
-            String[] p = q.split(":", 2);
-            String art = p[1].isBlank() ? "*" : p[1] + "*";
-            return "g:" + p[0] + "* AND a:" + art;
-        }
-        if (q.contains(".")) return "g:" + q + "*"; // dotted => groupId prefix
-        // Bare word => artifact prefix; field-qualified so hyphens/dots don't break the wildcard.
-        return "a:" + q + "*";
-    }
-
     /** Reuse jbang's gavsearch alias to look up Maven coordinates for completion. */
     private List<String> gavSearch(String query) {
         try {
-            Process p = new ProcessBuilder("jbang", "gavsearch@jbangdev", "-q", solrQuery(query))
+            Process p = new ProcessBuilder("jbang", "gavsearch@jbangdev", "-q", Maven.solrQuery(query))
                     .redirectError(ProcessBuilder.Redirect.DISCARD).start();
             List<String> gavs;
             try (var reader = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
-                gavs = reader.lines()
-                        .filter(l -> l.matches("[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+:[^ ]+"))
-                        .distinct().limit(25).collect(Collectors.toList());
+                gavs = Maven.parseGavLines(reader.lines(), 25);
             }
             p.waitFor();
             return gavs;
@@ -855,7 +774,7 @@ public class repl implements AutoCloseable {
     }
 
     private void addDependency(String gav) throws Exception {
-        if (!gav.matches("[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+:[A-Za-z0-9_.+\\-]+(?:[:@][A-Za-z0-9_.-]+)*")) {
+        if (!Maven.isCoordinate(gav)) {
             show("Expected Maven coordinates group:artifact:version");
             return;
         }
@@ -893,105 +812,3 @@ public class repl implements AutoCloseable {
     int exitCode() { return exitCode; }
     @Override public void close() { jshell.close(); }
 }
-
-
-final class ReplSyntaxHighlighter {
-    private static final String RESET = "\u001b[0m";
-    private static final String KEYWORD = "\u001b[35m";
-    private static final String STRING = "\u001b[32m";
-    private static final String COMMENT = "\u001b[90m";
-    private static final String COMMAND = "\u001b[36m";
-    private static final String DEPRECATED = "\u001b[9m";
-    private final SourceCodeAnalysis analysis;
-
-    public ReplSyntaxHighlighter(JShell shell) { this.analysis = shell.sourceCodeAnalysis(); }
-
-    /** Render the entire input with ANSI color. */
-    public String highlight(String source) {
-        if (source == null || source.isEmpty()) return source;
-        return render(source, styles(source));
-    }
-
-    /** Per-character style ids: 0 none, 1 keyword, 2 string, 3 comment, 4 deprecated, 5 command. */
-    public int[] styles(String source) {
-        if (source == null || source.isEmpty()) return new int[0];
-        if (source.charAt(0) == '/') return commandStyles(source);
-        int[] styles = new int[source.length()];
-        // Minimal lexing of comments, strings, chars and text blocks. Semantic JShell spans overlay identifiers.
-        for (int i = 0; i < source.length();) {
-            if (source.startsWith("//", i)) {
-                int end = source.indexOf('\n', i);
-                if (end < 0) end = source.length();
-                Arrays.fill(styles, i, end, 3); i = end; continue;
-            }
-            if (source.startsWith("/*", i)) {
-                int end = source.indexOf("*/", i + 2);
-                end = end < 0 ? source.length() : end + 2;
-                Arrays.fill(styles, i, end, 3); i = end; continue;
-            }
-            if (source.charAt(i) == '"' || source.charAt(i) == '\'') {
-                char quote = source.charAt(i);
-                int end = i + 1;
-                boolean triple = quote == '"' && source.startsWith("\"\"\"", i);
-                if (triple) {
-                    end = source.indexOf("\"\"\"", i + 3);
-                    end = end < 0 ? source.length() : end + 3;
-                } else {
-                    boolean escaped = false;
-                    while (end < source.length()) {
-                        char c = source.charAt(end++);
-                        if (!escaped && c == quote) break;
-                        if (!escaped && c == '\\') escaped = true;
-                        else escaped = false;
-                    }
-                }
-                Arrays.fill(styles, i, end, 2); i = end; continue;
-            }
-            i++;
-        }
-        try {
-            for (var h : analysis.highlights(source)) {
-                int from = Math.max(0, h.start()), to = Math.min(source.length(), h.end());
-                for (int i = from; i < to; i++) {
-                    if (styles[i] != 0) continue;
-                    if (h.attributes().contains(SourceCodeAnalysis.Attribute.KEYWORD)) styles[i] = 1;
-                    if (h.attributes().contains(SourceCodeAnalysis.Attribute.DEPRECATED)) styles[i] = 4;
-                }
-            }
-        } catch (IllegalArgumentException ex) {
-            // Leave lexical styles intact on incomplete or temporarily malformed input.
-        }
-        return styles;
-    }
-
-    private static int[] commandStyles(String source) {
-        int[] styles = new int[source.length()];
-        int end = 1;
-        while (end < source.length() && !Character.isWhitespace(source.charAt(end))) end++;
-        Arrays.fill(styles, 0, end, 5);
-        return styles;
-    }
-
-    private static String render(String source, int[] styles) {
-        StringBuilder out = new StringBuilder(source.length() + 48);
-        int current = 0;
-        for (int i = 0; i < source.length(); i++) {
-            if (styles[i] != current) {
-                if (current != 0) out.append(RESET);
-                current = styles[i];
-                out.append(switch (current) {
-                    case 1 -> KEYWORD;
-                    case 2 -> STRING;
-                    case 3 -> COMMENT;
-                    case 4 -> DEPRECATED;
-                    case 5 -> COMMAND;
-                    default -> "";
-                });
-            }
-            out.append(source.charAt(i));
-        }
-        if (current != 0) out.append(RESET);
-        return out.toString();
-    }
-}
-

@@ -364,14 +364,19 @@ public class replTest {
             assertNoneContains(lines, "{@code");
             assertNoneContains(lines, "press tab again");
         });
-        test("colorDocLine colors headers, signatures, hint", () -> {
-            assertStr(repl.colorDocLine("Parameters:"), "\u001b[1;33m");
-            assertStr(repl.colorDocLine("Optional<T> X.of(long p)"), "\u001b[1;36m");
-            assertStr(repl.colorDocLine("<press tab again to see documentation>"), "\u001b[90m");
-            eq("    pid - a native process ID", repl.colorDocLine("    pid - a native process ID"));
+        test("DocFormat.colorLine colors headers, signatures, hint", () -> {
+            assertStr(DocFormat.colorLine("Parameters:"), "\u001b[1;33m");
+            assertStr(DocFormat.colorLine("Optional<T> X.of(long p)"), "\u001b[1;36m");
+            assertStr(DocFormat.colorLine("<press tab again to see documentation>"), "\u001b[90m");
+            eq("    pid - a native process ID", DocFormat.colorLine("    pid - a native process ID"));
         });
-        test("formatJavadoc strips inline tags and wraps", () -> {
-            var out = repl.formatJavadoc("Returns an {@code Optional} value.\n@param x the {@link Thing}\n@return the result");
+        test("DocFormat.wrap wraps to width with indent", () -> {
+            var out = DocFormat.wrap("one two three four five", "  ", 12);
+            if (out.stream().anyMatch(l -> l.length() > 12)) throw new AssertionError("over width: " + out);
+            out.forEach(l -> { if (!l.startsWith("  ")) throw new AssertionError("no indent: " + l); });
+        });
+        test("DocFormat.javadoc strips inline tags and wraps", () -> {
+            var out = DocFormat.javadoc("Returns an {@code Optional} value.\n@param x the {@link Thing}\n@return the result");
             assertListContains(out, "Returns an Optional value.");
             assertListContains(out, "x - the Thing");
             assertNoneContains(out, "{@");
@@ -437,12 +442,27 @@ public class replTest {
             r.repl.complete(co);
             assertListContains(co.candidates, "--class-path");
         });
-        test("solrQuery builds prefix queries", () -> {
-            eq("g:dev.jb*", repl.solrQuery("dev.jb"));
-            eq("a:jack*", repl.solrQuery("jack"));
-            eq("a:jackson-databind*", repl.solrQuery("jackson-databind"));
-            eq("g:dev.jbang* AND a:jb*", repl.solrQuery("dev.jbang:jb"));
-            eq("g:dev.jbang* AND a:*", repl.solrQuery("dev.jbang:"));
+        test("Maven.looksLikeGav / isCoordinate", () -> {
+            eq(true, Maven.looksLikeGav("g:a:1.0"));
+            eq(false, Maven.looksLikeGav("just-a-word"));
+            eq(true, Maven.isCoordinate("org.foo:bar:1.2.3"));
+            eq(true, Maven.isCoordinate("org.foo:bar:1.2.3:jar"));
+            eq(false, Maven.isCoordinate("nope"));
+        });
+        test("Maven.parseGavLines filters, dedups, caps", () -> {
+            var in = java.util.stream.Stream.of(
+                    "Searching for ...", "[gav]", "  org.a:b:1.0  ", "org.a:b:1.0", "x:y:2");
+            var out = Maven.parseGavLines(in, 10);
+            eq(2, out.size());
+            assertListContains(out, "org.a:b:1.0");
+            assertListContains(out, "x:y:2");
+        });
+        test("Maven.solrQuery builds prefix queries", () -> {
+            eq("g:dev.jb*", Maven.solrQuery("dev.jb"));
+            eq("a:jack*", Maven.solrQuery("jack"));
+            eq("a:jackson-databind*", Maven.solrQuery("jackson-databind"));
+            eq("g:dev.jbang* AND a:jb*", Maven.solrQuery("dev.jbang:jb"));
+            eq("g:dev.jbang* AND a:*", Maven.solrQuery("dev.jbang:"));
         });
         if ("1".equals(System.getenv("REPL_NET_TESTS"))) {
             test("/deps add completes Maven coordinates (network)", () -> {
