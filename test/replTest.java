@@ -348,21 +348,28 @@ public class replTest {
         test("signature help on open paren", () -> {
             var r = repl();
             String code = "ProcessHandle.of(";
-            var co = new FakeComplete(code, code.length());
-            r.repl.showDocumentation(co, code, code.length());
-            assertListContains(co.candidates, "ProcessHandle.of(long pid)");
-            assertListContains(co.candidates, "press tab again");
+            var lines = r.repl.documentationLines(code, code.length(), false);
+            assertListContains(lines, "ProcessHandle.of(long pid)");
+            // hint must be the LAST line
+            eq("<press tab again to see documentation>", lines.get(lines.size() - 1));
         });
-        test("second tab shows javadoc", () -> {
+        test("javadoc is formatted, not raw tags", () -> {
             var r = repl();
             String code = "ProcessHandle.of(";
-            var co1 = new FakeComplete(code, code.length());
-            r.repl.showDocumentation(co1, code, code.length());   // signatures
-            var co2 = new FakeComplete(code, code.length());
-            r.repl.showDocumentation(co2, code, code.length());   // same spot -> javadoc
-            assertNoneContains(co2.candidates, "press tab again");
-            if (co2.candidates.size() <= co1.candidates.size())
-                throw new AssertionError("expected javadoc to add lines: " + co2.candidates);
+            var lines = r.repl.documentationLines(code, code.length(), true);
+            assertListContains(lines, "Parameters:");
+            assertListContains(lines, "pid - a native process ID");
+            assertListContains(lines, "Returns:");
+            assertListContains(lines, "Thrown Exceptions:");
+            assertNoneContains(lines, "@param");
+            assertNoneContains(lines, "{@code");
+            assertNoneContains(lines, "press tab again");
+        });
+        test("formatJavadoc strips inline tags and wraps", () -> {
+            var out = repl.formatJavadoc("Returns an {@code Optional} value.\n@param x the {@link Thing}\n@return the result");
+            assertListContains(out, "Returns an Optional value.");
+            assertListContains(out, "x - the Thing");
+            assertNoneContains(out, "{@");
         });
         test("java member completion", () -> {
             var r = repl();

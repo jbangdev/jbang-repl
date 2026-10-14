@@ -44,7 +44,7 @@ public class repl implements AutoCloseable {
 
     public repl() throws IOException {
         connection = new TerminalConnection();
-        readline = ReadlineBuilder.builder().build();
+        readline = ReadlineBuilder.builder().completionHandler(new DocHandler()).build();
         sink = s -> connection.write(s + "\n");
         // Ctrl-C arrives as SIGINT (native signals), not a raw byte. Confirm before quitting.
         connection.setSignalHandler(sig -> {
@@ -193,15 +193,8 @@ public class repl implements AutoCloseable {
         String code = prefix + co.getBuffer();
         int cursor = prefix.length() + co.getCursor();
         int[] anchor = new int[1];
-        // At an argument position (cursor right after '(' or ','), prefer signature help like jshell.
-        int c = cursor - 1;
-        while (c >= 0 && code.charAt(c) == ' ') c--;
-        boolean argPos = c >= 0 && (code.charAt(c) == '(' || code.charAt(c) == ',');
-        if (argPos && showDocumentation(co, code, cursor)) return;
-
         var suggestions = jshell.sourceCodeAnalysis().completionSuggestions(code, cursor, anchor);
-        if (suggestions.isEmpty()) { showDocumentation(co, code, cursor); return; }
-        lastDocKey = null;
+        if (suggestions.isEmpty()) return; // documentation is handled by DocHandler.renderDoc
         co.setOffset(anchor[0] - prefix.length());
         co.setAppendSeparator(false); // no trailing space; allow typing '.' or completing further
         co.setSeparator('\0');
@@ -212,26 +205,107 @@ public class repl implements AutoCloseable {
     private String lastDocKey;       // code+cursor of the last documentation request
     private boolean docJavadocNext;  // next Tab at the same spot shows javadoc
 
-    /** jshell-style signature help: first Tab shows signatures, a second shows javadoc. Returns true if shown. */
-    boolean showDocumentation(CompleteOperation co, String code, int cursor) {
+    /** Custom handler: render jshell-style signature/doc help ourselves (ordered, formatted), else default. */
+    final class DocHandler extends org.aesh.readline.completion.impl.SimpleCompletionHandler {
+        @Override public void complete(org.aesh.readline.InputProcessor ip) {
+            if (renderDoc(ip.buffer())) return;
+            super.complete(ip);
+        }
+    }
+
+    /** If the cursor warrants signature help, render it (in order) and redraw. Returns true if shown. */
+    boolean renderDoc(org.aesh.readline.ConsoleBuffer cb) {
+        String prefix = pending.toString();
+        String line = cb.buffer().asString();
+        int cur = cb.buffer().multiCursor();
+        if (prefix.isEmpty() && line.stripLeading().startsWith("/")) return false; // slash command
+        String code = prefix + line;
+        int cursor = prefix.length() + cur;
+        int c = cursor - 1;
+        while (c >= 0 && code.charAt(c) == ' ') c--;
+        boolean argPos = c >= 0 && (code.charAt(c) == '(' || code.charAt(c) == ',');
+        int[] anchor = new int[1];
+        boolean noCompletions = jshell.sourceCodeAnalysis().completionSuggestions(code, cursor, anchor).isEmpty();
+        if (!argPos && !noCompletions) return false;
         String key = cursor + ":" + code;
         boolean javadoc = key.equals(lastDocKey) && docJavadocNext;
+        List<String> lines = documentationLines(code, cursor, javadoc);
+        if (lines.isEmpty()) { lastDocKey = null; return false; }
+        StringBuilder sb = new StringBuilder("\r\n");
+        for (String l : lines) sb.append(l).append("\r\n");
+        cb.writeOut(sb.toString());
+        cb.drawLineForceDisplay();
+        lastDocKey = key;
+        docJavadocNext = !javadoc;
+        return true;
+    }
+
+    /** Signature(s) and, when javadoc=true, a jshell-style formatted javadoc body. */
+    List<String> documentationLines(String code, int cursor, boolean javadoc) {
         var docs = jshell.sourceCodeAnalysis().documentation(code, cursor, javadoc);
-        if (docs.isEmpty()) { lastDocKey = null; return false; }
-        co.setOffset(co.getCursor());   // replace nothing; display-only
-        co.setAppendSeparator(false);
-        co.setIgnoreStartsWith(true);   // never insert into the buffer
         List<String> lines = new ArrayList<>();
         for (var d : docs) {
             lines.add(d.signature());
-            if (javadoc && d.javadoc() != null && !d.javadoc().isBlank())
-                for (String l : d.javadoc().strip().split("\n")) lines.add("    " + l);
+            if (javadoc && d.javadoc() != null && !d.javadoc().isBlank()) {
+                lines.add("");
+                lines.addAll(formatJavadoc(d.javadoc()));
+            }
         }
-        if (!javadoc) lines.add("<press tab again to see documentation>");
-        lines.forEach(co::addCompletionCandidate);
-        lastDocKey = key;
-        docJavadocNext = !javadoc;      // toggle for the next Tab at the same spot
-        return true;
+        if (!lines.isEmpty() && !javadoc) lines.add("<press tab again to see documentation>");
+        return lines;
+    }
+
+    /** Turn raw javadoc (inline + block tags) into readable text like jshell's formatter. */
+    static List<String> formatJavadoc(String javadoc) {
+        // Strip inline tags: {@code X} / {@link X} / {@literal X} -> X
+        String text = javadoc.replaceAll("\\{@\\w+\\s+([^}]*)\\}", "$1").strip();
+        List<String> desc = new ArrayList<>();
+        List<String> params = new ArrayList<>();
+        List<String> returns = new ArrayList<>();
+        List<String> throwsList = new ArrayList<>();
+        List<String> target = desc;
+        for (String raw : text.split("\n")) {
+            String l = raw.strip();
+            if (l.startsWith("@param")) {
+                String[] p = l.substring(6).strip().split("\\s+", 2);
+                params.add(p[0] + (p.length > 1 ? " - " + p[1] : ""));
+                target = params;
+            } else if (l.startsWith("@return")) {
+                returns.add(l.substring(7).strip());
+                target = returns;
+            } else if (l.startsWith("@throws") || l.startsWith("@exception")) {
+                String rest = l.replaceFirst("@(throws|exception)", "").strip();
+                String[] p = rest.split("\\s+", 2);
+                throwsList.add(p[0] + (p.length > 1 ? " - " + p[1] : ""));
+                target = throwsList;
+            } else if (l.startsWith("@")) {
+                target = new ArrayList<>(); // ignore other block tags (@see, @since, ...)
+            } else if (!l.isEmpty()) {
+                if (target.isEmpty()) target.add(l); else target.set(target.size() - 1, target.get(target.size() - 1) + " " + l);
+            }
+        }
+        List<String> out = new ArrayList<>();
+        desc.forEach(d -> out.addAll(wrap(d, "", 76)));
+        if (!params.isEmpty()) { out.add(""); out.add("Parameters:"); params.forEach(p -> out.addAll(wrap(p, "    ", 76))); }
+        if (!returns.isEmpty()) { out.add(""); out.add("Returns:"); returns.forEach(r -> out.addAll(wrap(r, "    ", 76))); }
+        if (!throwsList.isEmpty()) { out.add(""); out.add("Thrown Exceptions:"); throwsList.forEach(t -> out.addAll(wrap(t, "    ", 76))); }
+        return out;
+    }
+
+    /** Word-wrap one paragraph to width, prefixing every line with indent. */
+    static List<String> wrap(String s, String indent, int width) {
+        List<String> out = new ArrayList<>();
+        StringBuilder cur = new StringBuilder(indent);
+        for (String w : s.split("\\s+")) {
+            if (cur.length() > indent.length() && cur.length() + 1 + w.length() > width) {
+                out.add(cur.toString());
+                cur = new StringBuilder(indent);
+            }
+            if (cur.length() > indent.length()) cur.append(' ');
+            cur.append(w);
+        }
+        if (cur.length() > indent.length()) out.add(cur.toString());
+        return out;
     }
 
     private final List<Completion> completions = List.<Completion>of(new Completion<CompleteOperation>() {
