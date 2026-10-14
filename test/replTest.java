@@ -344,6 +344,43 @@ public class replTest {
             r.repl.complete(co);
             assertListContains(co.candidates, "/vars");
         });
+        test("signature help on open paren", () -> {
+            var r = repl();
+            String code = "ProcessHandle.of(";
+            var lines = r.repl.documentationLines(code, code.length(), false);
+            assertListContains(lines, "ProcessHandle.of(long pid)");
+            // hint must be the LAST line
+            eq("<press tab again to see documentation>", lines.get(lines.size() - 1));
+        });
+        test("javadoc is formatted, not raw tags", () -> {
+            var r = repl();
+            String code = "ProcessHandle.of(";
+            var lines = r.repl.documentationLines(code, code.length(), true);
+            assertListContains(lines, "Parameters:");
+            assertListContains(lines, "pid - a native process ID");
+            assertListContains(lines, "Returns:");
+            assertListContains(lines, "Thrown Exceptions:");
+            assertNoneContains(lines, "@param");
+            assertNoneContains(lines, "{@code");
+            assertNoneContains(lines, "press tab again");
+        });
+        test("DocFormat.colorLine colors headers, signatures, hint", () -> {
+            assertStr(DocFormat.colorLine("Parameters:"), "\u001b[1;33m");
+            assertStr(DocFormat.colorLine("Optional<T> X.of(long p)"), "\u001b[1;36m");
+            assertStr(DocFormat.colorLine("<press tab again to see documentation>"), "\u001b[90m");
+            eq("    pid - a native process ID", DocFormat.colorLine("    pid - a native process ID"));
+        });
+        test("DocFormat.wrap wraps to width with indent", () -> {
+            var out = DocFormat.wrap("one two three four five", "  ", 12);
+            if (out.stream().anyMatch(l -> l.length() > 12)) throw new AssertionError("over width: " + out);
+            out.forEach(l -> { if (!l.startsWith("  ")) throw new AssertionError("no indent: " + l); });
+        });
+        test("DocFormat.javadoc strips inline tags and wraps", () -> {
+            var out = DocFormat.javadoc("Returns an {@code Optional} value.\n@param x the {@link Thing}\n@return the result");
+            assertListContains(out, "Returns an Optional value.");
+            assertListContains(out, "x - the Thing");
+            assertNoneContains(out, "{@");
+        });
         test("java member completion", () -> {
             var r = repl();
             var co = new FakeComplete("System.out.pri", 14);
@@ -437,6 +474,28 @@ public class replTest {
                 eq("/deps add ".length(), co.offset);
             });
         }
+
+        // highlighter
+        test("highlighter colors keyword and string", () -> {
+            var hl = new ReplSyntaxHighlighter(jdk.jshell.JShell.builder().build());
+            int[] st = hl.styles("int x = \"hi\"; // c");
+            eq(1, st[0]);                       // 'i' of int -> keyword
+            eq(2, st["int x = ".length()]);     // '"' -> string
+            eq(3, st["int x = \"hi\"; ".length()]); // '/' of comment -> comment
+        });
+        test("highlighter marks slash command", () -> {
+            var hl = new ReplSyntaxHighlighter(jdk.jshell.JShell.builder().build());
+            int[] st = hl.styles("/list all");
+            eq(5, st[0]);
+            eq(5, st[4]);
+            eq(0, st[5]); // space after command word
+        });
+        test("highlight renders ANSI", () -> {
+            var hl = new ReplSyntaxHighlighter(jdk.jshell.JShell.builder().build());
+            String out = hl.highlight("int x");
+            assertStr(out, "\u001b[35m");
+            assertStr(out, "\u001b[0m");
+        });
 
         System.out.println();
         System.out.println(pass + " passed, " + fail + " failed");
