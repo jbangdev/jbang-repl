@@ -127,11 +127,14 @@ public class repl implements AutoCloseable {
                 System.err.println("Unknown arguments: " + String.join(" ", args));
                 System.exit(2);
             }
-            // External kill (SIGTERM) can't prompt; at least restore the terminal on exit.
+            // External kill (SIGTERM) can't prompt; at least restore the terminal and
+            // kill JShell's RemoteExecutionControl agent JVM on exit.
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 try { if (repl.connection != null) repl.connection.close(); } catch (Exception ignored) {}
+                try { repl.jshell.close(); } catch (Exception ignored) {}
             }));
             System.out.println("JBang REPL (aesh + JShell, Java " + Runtime.version().feature() + ")");
+            System.out.println("PID " + ProcessHandle.current().pid());
             System.out.println("Enter Java or /help. Ctrl-D to exit.");
             repl.next();
             repl.connection.openBlocking();
