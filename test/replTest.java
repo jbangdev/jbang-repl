@@ -322,6 +322,23 @@ public class replTest {
             r.repl.accept("List<Integer> xs = new ArrayList<>(); xs.size()");
             assertContains(r.out, "0");
         });
+        test("/list hides startup snippets", () -> {
+            var r = repl();
+            r.repl.loadStartup("DEFAULT");
+            r.repl.accept("int zz = 9;");
+            r.out.clear();
+            r.repl.accept("/list");
+            assertAnyContains(r.out, "int zz = 9;");
+            assertNoneContains(r.out, "import");
+        });
+        test("/imports has no blank lines", () -> {
+            var r = repl();
+            r.repl.runStartupSilently(repl.DEFAULT_JSH);
+            r.out.clear();
+            r.repl.accept("/imports");
+            for (String l : r.out) if (l.contains("\n")) throw new AssertionError("import line has newline: <" + l + ">");
+            assertAnyContains(r.out, "import java.util.*;");
+        });
         test("PRINTING startup defines println", () -> {
             var r = repl();
             r.repl.loadStartup("PRINTING");

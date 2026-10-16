@@ -196,14 +196,20 @@ public class repl implements AutoCloseable {
             "TOOLING", TOOLING_JSH,
             "JAVASE", "import module java.se;\n"); // needs Java 25+; best-effort
 
+    /** jshell's DEFAULT uses `import module java.base;` (Java 25+); fall back to the explicit list. */
+    static String defaultStartup() {
+        return Runtime.version().feature() >= 25 ? "import module java.base;\n" : DEFAULT_JSH;
+    }
+
     /** Resolve a startup spec (preset name or file path) and evaluate it silently. */
     void loadStartup(String spec) throws IOException {
-        String content = STARTUP_PRESETS.containsKey(spec) ? STARTUP_PRESETS.get(spec)
+        String content = spec.equals("DEFAULT") ? defaultStartup()
+                : STARTUP_PRESETS.containsKey(spec) ? STARTUP_PRESETS.get(spec)
                 : Files.readString(Path.of(spec), StandardCharsets.UTF_8);
         runStartupSilently(content);
     }
 
-    /** Evaluate a block of snippets without echoing results or recording them. */
+    /** Evaluate a block of snippets without echoing results; remember them so /list hides them (like jshell). */
     void runStartupSilently(String content) {
         var sca = jshell.sourceCodeAnalysis();
         String src = content;
@@ -211,7 +217,8 @@ public class repl implements AutoCloseable {
             var info = sca.analyzeCompletion(src);
             String snippet = info.source();
             if (snippet == null || snippet.isBlank()) break;
-            jshell.eval(snippet);
+            for (SnippetEvent e : jshell.eval(snippet))
+                if (e.snippet() != null) hiddenSnippetIds.add(e.snippet().id());
             src = info.remaining();
         }
     }
@@ -491,9 +498,10 @@ public class repl implements AutoCloseable {
                     jshell.diagnostics(event.snippet()).forEach(d -> show("Error: " + d.getMessage(Locale.getDefault())));
                 } else if (event.value() != null && event.causeSnippet() == null) {
                     show((event.snippet() instanceof jdk.jshell.DeclarationSnippet d) ? d.name() + " ==> " + event.value() : event.value());
-                    // Alias $_ to the latest result (like Python's _); ignore its own events.
+                    // Alias $_ to the latest result (like Python's _); hide the alias snippet from /list.
                     if (event.snippet() instanceof jdk.jshell.VarSnippet vs && !vs.name().equals("$_")) {
-                        jshell.eval("var $_ = " + vs.name() + ";");
+                        for (SnippetEvent ae : jshell.eval("var $_ = " + vs.name() + ";"))
+                            if (ae.snippet() != null) hiddenSnippetIds.add(ae.snippet().id());
                     }
                 }
             }
@@ -578,7 +586,7 @@ public class repl implements AutoCloseable {
 
     @CommandDefinition(name = "imports", description = "list imported items")
     public final class ImportsCmd implements Command<CommandInvocation> {
-        public CommandResult execute(CommandInvocation ci) { jshell.imports().forEach(i -> show("  " + i.source())); return CommandResult.SUCCESS; }
+        public CommandResult execute(CommandInvocation ci) { jshell.imports().forEach(i -> show("  " + i.source().strip())); return CommandResult.SUCCESS; }
     }
 
     @CommandDefinition(name = "drop", description = "delete a snippet")
@@ -680,10 +688,16 @@ public class repl implements AutoCloseable {
         drain();
     }
 
+    // Snippets hidden from /list etc.: startup scripts and the internal $_ alias (matches jshell).
+    private final Set<String> hiddenSnippetIds = new HashSet<>();
+
     private List<Snippet> allSnippets() { return jshell.snippets().collect(Collectors.toList()); }
 
+    /** Active, user-entered snippets (startup + internal snippets are hidden from /list, like jshell). */
     private List<Snippet> activeSnippets() {
-        return jshell.snippets().filter(s -> jshell.status(s).isActive()).collect(Collectors.toList());
+        return jshell.snippets()
+                .filter(s -> jshell.status(s).isActive() && !hiddenSnippetIds.contains(s.id()))
+                .collect(Collectors.toList());
     }
 
     /** Resolve a snippet selector (id or declared name) to matching snippets. */
@@ -733,6 +747,7 @@ public class repl implements AutoCloseable {
         jshell.close();
         jshell = JShell.builder().out(System.out).err(System.err).build();
         syntaxHighlighter = new ReplSyntaxHighlighter(jshell);
+        hiddenSnippetIds.clear(); // ids belong to the old session
         for (String jar : resolvedJars) jshell.addToClasspath(jar);
     }
 
