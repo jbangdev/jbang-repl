@@ -11,14 +11,14 @@ import jdk.jshell.Snippet;
 import jdk.jshell.SnippetEvent;
 import jdk.jshell.Diag;
 import jdk.jshell.SourceCodeAnalysis;
-import org.aesh.readline.Readline;
-import org.aesh.readline.ReadlineBuilder;
 import org.aesh.terminal.tty.TerminalConnection;
 import org.aesh.readline.completion.Completion;
 import org.aesh.readline.completion.CompleteOperation;
-import org.aesh.readline.ReadlineRequest;
 import org.aesh.readline.cursor.Line;
+import org.aesh.readline.prompt.Prompt;
 import org.aesh.terminal.formatting.Color;
+import org.aesh.console.ReadlineConsole;
+import org.aesh.command.settings.SettingsBuilder;
 
 import org.aesh.command.Command;
 import org.aesh.command.CommandDefinition;
@@ -43,7 +43,7 @@ import java.util.stream.*;
 public class repl implements AutoCloseable {
     private JShell jshell = JShell.builder().out(System.out).err(System.err).build();
     private ReplSyntaxHighlighter syntaxHighlighter = new ReplSyntaxHighlighter(jshell);
-    private final Readline readline;
+    private ReadlineConsole console;
     private final TerminalConnection connection;
     private final java.util.function.Consumer<String> sink;
     private final List<String> dependencies = new ArrayList<>();
@@ -60,14 +60,34 @@ public class repl implements AutoCloseable {
 
     public repl() throws IOException {
         connection = new TerminalConnection();
-        readline = ReadlineBuilder.builder().completionHandler(new DocHandler()).build();
-        sink = s -> connection.write(s + "\n");
+        sink = s -> connection.write(s + "\r\n");
         buildCommandRuntime();
-        // Ctrl-C arrives as SIGINT (native signals), not a raw byte. Confirm before quitting.
-        connection.setSignalHandler(sig -> {
-            if (sig == org.aesh.terminal.tty.Signal.INT && handleInterrupt(System.currentTimeMillis()))
-                doExit(null);
-        });
+        try {
+            // Drive the loop with aesh's ReadlineConsole (3.18.5 exposes cursorListener +
+            // completionHandler seams). Commands are dispatched by our own accept() via the
+            // commandNotFoundHandler, so the registry is empty and every line routes there.
+            var settings = SettingsBuilder.<CommandInvocation>builder()
+                    .connection(connection)
+                    .commandRegistry(AeshCommandRegistryBuilder.<CommandInvocation>builder().create())
+                    .enableOperatorParser(false)   // don't parse Java |, ;, >, && as shell operators
+                    .enableAlias(false)
+                    .persistHistory(false)
+                    .redrawPromptOnInterrupt(true)
+                    .promptSupplier(() -> new Prompt(pending.length() == 0 ? "java> " : "...> "))
+                    .commandNotFoundHandler((line, output) -> {
+                        try { accept(line); } catch (Exception e) { show("Error: " + e.getMessage()); }
+                    })
+                    .setInterruptHandler(v -> { if (handleInterrupt(System.currentTimeMillis())) doExit(null); })
+                    .cursorListener(this::colorize)
+                    .completionHandler(new DocHandler())
+                    .build();
+            console = new ReadlineConsole(settings);
+            console.addCompletion(new Completion<CompleteOperation>() {
+                public void complete(CompleteOperation co) { repl.this.complete(co); }
+            });
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to build console", e);
+        }
     }
 
     /** Register every slash command as an aesh @Command and build the runtime. */
@@ -198,7 +218,7 @@ public class repl implements AutoCloseable {
     /** Headless constructor for tests: no terminal, output captured via sink. */
     repl(java.util.function.Consumer<String> sink) {
         connection = null;
-        readline = null;
+        console = null;
         this.sink = sink;
         buildCommandRuntime();
     }
@@ -248,8 +268,7 @@ public class repl implements AutoCloseable {
             System.out.println("JBang REPL (aesh + JShell, Java " + Runtime.version().feature() + ")");
             System.out.println("PID " + ProcessHandle.current().pid());
             System.out.println("Enter Java or /help. Ctrl-D to exit.");
-            repl.next();
-            repl.connection.openBlocking();
+            repl.console.start();   // blocks until the console stops (exit / Ctrl-D)
             if (repl.exitRequested && repl.exitCode != 0) System.exit(repl.exitCode);
         }
     }
@@ -405,10 +424,6 @@ public class repl implements AutoCloseable {
         return lines;
     }
 
-    private final List<Completion> completions = List.<Completion>of(new Completion<CompleteOperation>() {
-        public void complete(CompleteOperation co) { repl.this.complete(co); }
-    });
-
     /** Live-colorize the editable buffer on cursor movement (aesh 3.14 only fires this on moveCursor). */
     private void colorize(Line line) {
         String src = line.toString();
@@ -428,26 +443,6 @@ public class repl implements AutoCloseable {
             if (c != null) tx.colorize(i, c, Color.DEFAULT, styles[i] == 3);
         }
         tx.build().run();
-    }
-
-    private void next() {
-        var request = ReadlineRequest.builder()
-                .connection(connection)
-                .prompt(pending.isEmpty() ? "java> " : "...> ")
-                .completions(completions)
-                .cursorListener(this::colorize)
-                .requestHandler(line -> {
-                    if (line == null) { connection.close(); return; }
-                    try {
-                        accept(line);
-                    } catch (Exception ex) {
-                        show("Error: " + ex.getMessage());
-                    }
-                    if (!exitRequested) next(); // don't re-arm readline on a closed connection
-
-                })
-                .build();
-        readline.readline(request);
     }
 
     void accept(String line) throws Exception {
@@ -827,6 +822,7 @@ public class repl implements AutoCloseable {
     private void doExit(Integer code) {
         exitRequested = true;
         if (code != null) exitCode = code;
+        if (console != null) console.stop();
         if (connection != null) connection.close();
     }
 
