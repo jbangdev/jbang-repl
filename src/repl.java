@@ -64,12 +64,12 @@ public class repl implements AutoCloseable {
         buildCommandRuntime();
         try {
             // Drive the loop with aesh's ReadlineConsole (3.18.5 exposes cursorListener +
-            // completionHandler seams). Commands are dispatched by our own accept() via the
-            // commandNotFoundHandler, so the registry is empty and every line routes there.
+            // completionHandler seams). The console owns the /command registry and dispatches
+            // them natively; Java/rerun lines fall through commandNotFoundHandler to accept().
             var settings = SettingsBuilder.<CommandInvocation>builder()
                     .connection(connection)
                     .aeshContext(aeshContext)
-                    .commandRegistry(AeshCommandRegistryBuilder.<CommandInvocation>builder().create())
+                    .commandRegistry(createRegistry())
                     .enableOperatorParser(false)   // don't parse Java |, ;, >, && as shell operators
                     .enableAlias(false)
                     .persistHistory(false)
@@ -77,6 +77,10 @@ public class repl implements AutoCloseable {
                     .promptSupplier(() -> new Prompt(pending.length() == 0 ? "java> " : "...> "))
                     .commandNotFoundHandler((line, output) -> {
                         try { accept(line); } catch (Exception e) { show("Error: " + e.getMessage()); }
+                    })
+                    // Natively-dispatched /commands bypass accept(); record them in history here.
+                    .commandExecutionListener((cmdLine, res, ms) -> {
+                        if (cmdLine != null && !cmdLine.isBlank()) history.add(cmdLine);
                     })
                     .setInterruptHandler(v -> { if (handleInterrupt(System.currentTimeMillis())) doExit(null); })
                     .cursorListener(this::colorize)
@@ -92,30 +96,22 @@ public class repl implements AutoCloseable {
         }
     }
 
-    /** Register every slash command as an aesh @Command and build the runtime. */
+    /** A fresh registry of all /commands (new @Command instances bound to this repl). */
+    private org.aesh.command.registry.CommandRegistry<CommandInvocation> createRegistry() throws Exception {
+        return AeshCommandRegistryBuilder.<CommandInvocation>builder()
+                .command(new ExitCmd()).command(new HelpCmd()).command(new ClearCmd())
+                .command(new ListCmd()).command(new VarsCmd()).command(new MethodsCmd())
+                .command(new TypesCmd()).command(new ImportsCmd()).command(new DropCmd())
+                .command(new ResetCmd()).command(new ReloadCmd()).command(new HistoryCmd())
+                .command(new SaveCmd()).command(new OpenCmd()).command(new SetCmd())
+                .command(new EnvCmd()).command(new EditCmd()).command(new DepsCmd())
+                .create();
+    }
+
+    /** Headless command dispatch for tests; the console uses an equivalent registry internally. */
     private void buildCommandRuntime() {
         try {
-            var reg = AeshCommandRegistryBuilder.builder()
-                    .command(new ExitCmd())
-                    .command(new HelpCmd())
-                    .command(new ClearCmd())
-                    .command(new ListCmd())
-                    .command(new VarsCmd())
-                    .command(new MethodsCmd())
-                    .command(new TypesCmd())
-                    .command(new ImportsCmd())
-                    .command(new DropCmd())
-                    .command(new ResetCmd())
-                    .command(new ReloadCmd())
-                    .command(new HistoryCmd())
-                    .command(new SaveCmd())
-                    .command(new OpenCmd())
-                    .command(new SetCmd())
-                    .command(new EnvCmd())
-                    .command(new EditCmd())
-                    .command(new DepsCmd())
-                    .create();
-            runtime = AeshCommandRuntimeBuilder.builder().commandRegistry(reg).build();
+            runtime = AeshCommandRuntimeBuilder.<CommandInvocation>builder().commandRegistry(createRegistry()).build();
         } catch (Exception e) {
             throw new RuntimeException("Failed to build command runtime", e);
         }
@@ -317,31 +313,14 @@ public class repl implements AutoCloseable {
         show("Add one with: /deps add <#>");
     }
 
-    /** Candidate first-arguments for a /command: static flags/subcommands plus dynamic snippet names. */
-    private List<String> commandArgs(String cmd) {
-        List<String> out = new ArrayList<>(switch (cmd) {
-            case "deps" -> List.of("add", "list", "search");
-            case "save" -> List.of("--all", "--history", "--start");
-            case "list" -> List.of("--all");
-            case "reload" -> List.of("--quiet");
-            case "set" -> List.of("feedback");
-            case "env" -> List.of("--class-path");
-            case "help" -> COMMANDS;
-            default -> List.of();
-        });
-        // Snippet-targeting commands also complete declared names.
-        if (List.of("drop", "edit", "list", "vars", "methods", "types").contains(cmd)) {
-            jshell.snippets()
-                    .filter(s -> s instanceof jdk.jshell.DeclarationSnippet)
-                    .map(s -> ((jdk.jshell.DeclarationSnippet) s).name())
-                    .forEach(out::add);
-        }
-        return out;
-    }
+    // Snippet-name arguments our completion fills in (aesh has no @Argument completer for these).
+    private static final java.util.regex.Pattern SNIPPET_ARG =
+            java.util.regex.Pattern.compile("/(drop|edit|list|vars|methods|types) [^ ]*");
 
     void complete(CompleteOperation co) {
         String prefix = pending.toString();
-        // Complete Maven coordinates via jbang's gavsearch for /deps add <query>.
+        // /command names, options and group sub-commands are completed natively by aesh's registry.
+        // We only add what aesh can't: Maven coordinates, snippet names, and Java/JShell completion.
         if (prefix.isEmpty() && co.getBuffer().startsWith(DEPS_ADD)) {
             String query = co.getBuffer().substring(DEPS_ADD.length(), co.getCursor()).strip();
             if (query.isEmpty()) return;
@@ -350,24 +329,20 @@ public class repl implements AutoCloseable {
             gavSearch(query).forEach(co::addCompletionCandidate);
             return;
         }
-        // Complete the first argument of a /command (subcommands, flags, or snippet names).
-        if (prefix.isEmpty() && co.getBuffer().matches("/\\w+ [^ ]*")) {
+        // Snippet-name completion for /drop, /edit, /list, /vars, /methods, /types.
+        if (prefix.isEmpty() && SNIPPET_ARG.matcher(co.getBuffer()).matches()) {
             int sp = co.getBuffer().indexOf(' ');
-            String cmd = co.getBuffer().substring(1, sp);
             String word = co.getBuffer().substring(sp + 1, co.getCursor());
             co.setOffset(sp + 1);
             co.setAppendSeparator(false);
-            commandArgs(cmd).stream().filter(s -> s.startsWith(word)).distinct().forEach(co::addCompletionCandidate);
+            jshell.snippets()
+                    .filter(s -> s instanceof jdk.jshell.DeclarationSnippet)
+                    .map(s -> ((jdk.jshell.DeclarationSnippet) s).name())
+                    .filter(n -> n.startsWith(word)).distinct()
+                    .forEach(co::addCompletionCandidate);
             return;
         }
-        // Complete /commands when a slash command is being typed.
-        if (prefix.isEmpty() && co.getBuffer().startsWith("/") && !co.getBuffer().contains(" ")) {
-            String word = co.getBuffer().substring(1, co.getCursor());
-            co.setOffset(0);
-            co.setAppendSeparator(false);
-            COMMANDS.stream().filter(c -> c.startsWith(word)).map(c -> "/" + c).forEach(co::addCompletionCandidate);
-            return;
-        }
+        if (prefix.isEmpty() && co.getBuffer().startsWith("/")) return; // aesh handles command completion
         String code = prefix + co.getBuffer();
         int cursor = prefix.length() + co.getCursor();
         int[] anchor = new int[1];
@@ -523,7 +498,7 @@ public class repl implements AutoCloseable {
         if (t.matches("\\d+(-\\d+)?")) { rerunIds(t); return; }
         if (t.startsWith("?")) { helpTopic(t.substring(1).strip()); return; }
         try {
-            runtime.executeCommand(t);
+            runtime.executeCommand("/" + t);   // command names are slash-prefixed
         } catch (CommandNotFoundException e) {
             show("Unknown command /" + t.split("\\s+", 2)[0] + ". Try /help");
         } catch (Exception e) {
@@ -533,26 +508,26 @@ public class repl implements AutoCloseable {
 
     // ---- aesh @Command wrappers (parsing/validation/help) delegating to the helpers below ----
 
-    @CommandDefinition(name = "exit", aliases = {"quit"}, description = "exit the REPL")
+    @CommandDefinition(name = "/exit", aliases = {"/quit"}, description = "exit the REPL")
     public final class ExitCmd implements Command<CommandInvocation> {
         @Argument(description = "exit code")
         Integer code;
         public CommandResult execute(CommandInvocation ci) { doExit(code); return CommandResult.SUCCESS; }
     }
 
-    @CommandDefinition(name = "help", description = "get information about commands")
+    @CommandDefinition(name = "/help", description = "get information about commands")
     public final class HelpCmd implements Command<CommandInvocation> {
         @Argument(description = "command")
         String topic;
         public CommandResult execute(CommandInvocation ci) { helpTopic(topic == null ? "" : topic); return CommandResult.SUCCESS; }
     }
 
-    @CommandDefinition(name = "clear", description = "clear the pending input buffer")
+    @CommandDefinition(name = "/clear", description = "clear the pending input buffer")
     public final class ClearCmd implements Command<CommandInvocation> {
         public CommandResult execute(CommandInvocation ci) { pending.setLength(0); show("Input buffer cleared."); return CommandResult.SUCCESS; }
     }
 
-    @CommandDefinition(name = "list", description = "list source you have typed")
+    @CommandDefinition(name = "/list", description = "list source you have typed")
     public final class ListCmd implements Command<CommandInvocation> {
         @Option(shortName = 'a', name = "all", hasValue = false, description = "include startup/failed/overwritten snippets")
         boolean all;
@@ -561,57 +536,57 @@ public class repl implements AutoCloseable {
         public CommandResult execute(CommandInvocation ci) { listSnippets(all, name); return CommandResult.SUCCESS; }
     }
 
-    @CommandDefinition(name = "vars", description = "list declared variables")
+    @CommandDefinition(name = "/vars", description = "list declared variables")
     public final class VarsCmd implements Command<CommandInvocation> {
         @Argument(description = "variable name")
         String name;
         public CommandResult execute(CommandInvocation ci) { listVars(name); return CommandResult.SUCCESS; }
     }
 
-    @CommandDefinition(name = "methods", description = "list declared methods")
+    @CommandDefinition(name = "/methods", description = "list declared methods")
     public final class MethodsCmd implements Command<CommandInvocation> {
         @Argument(description = "method name")
         String name;
         public CommandResult execute(CommandInvocation ci) { listMethods(name); return CommandResult.SUCCESS; }
     }
 
-    @CommandDefinition(name = "types", description = "list declared types")
+    @CommandDefinition(name = "/types", description = "list declared types")
     public final class TypesCmd implements Command<CommandInvocation> {
         @Argument(description = "type name")
         String name;
         public CommandResult execute(CommandInvocation ci) { listTypes(name); return CommandResult.SUCCESS; }
     }
 
-    @CommandDefinition(name = "imports", description = "list imported items")
+    @CommandDefinition(name = "/imports", description = "list imported items")
     public final class ImportsCmd implements Command<CommandInvocation> {
         public CommandResult execute(CommandInvocation ci) { jshell.imports().forEach(i -> show("  " + i.source().strip())); return CommandResult.SUCCESS; }
     }
 
-    @CommandDefinition(name = "drop", description = "delete a snippet")
+    @CommandDefinition(name = "/drop", description = "delete a snippet")
     public final class DropCmd implements Command<CommandInvocation> {
         @Argument(description = "snippet name or id", required = true)
         String target;
         public CommandResult execute(CommandInvocation ci) { dropSnippets(target); return CommandResult.SUCCESS; }
     }
 
-    @CommandDefinition(name = "reset", description = "reset the REPL state")
+    @CommandDefinition(name = "/reset", description = "reset the REPL state")
     public final class ResetCmd implements Command<CommandInvocation> {
         public CommandResult execute(CommandInvocation ci) { doReset(); return CommandResult.SUCCESS; }
     }
 
-    @CommandDefinition(name = "reload", description = "reset and replay history")
+    @CommandDefinition(name = "/reload", description = "reset and replay history")
     public final class ReloadCmd implements Command<CommandInvocation> {
         @Option(shortName = 'q', name = "quiet", hasValue = false, description = "don't report replay")
         boolean quiet;
         public CommandResult execute(CommandInvocation ci) { doReload(quiet); return CommandResult.SUCCESS; }
     }
 
-    @CommandDefinition(name = "history", description = "history of what you have typed")
+    @CommandDefinition(name = "/history", description = "history of what you have typed")
     public final class HistoryCmd implements Command<CommandInvocation> {
         public CommandResult execute(CommandInvocation ci) { history.forEach(repl.this::show); return CommandResult.SUCCESS; }
     }
 
-    @CommandDefinition(name = "save", description = "save source to a file")
+    @CommandDefinition(name = "/save", description = "save source to a file")
     public final class SaveCmd implements Command<CommandInvocation> {
         @Option(name = "all", hasValue = false, description = "save all snippets incl. failed/overwritten")
         boolean all;
@@ -628,7 +603,7 @@ public class repl implements AutoCloseable {
         }
     }
 
-    @CommandDefinition(name = "open", description = "open a file as source input")
+    @CommandDefinition(name = "/open", description = "open a file as source input")
     public final class OpenCmd implements Command<CommandInvocation> {
         @Argument(description = "file", required = true)
         String file;
@@ -638,7 +613,7 @@ public class repl implements AutoCloseable {
         }
     }
 
-    @CommandDefinition(name = "set", description = "set configuration")
+    @CommandDefinition(name = "/set", description = "set configuration")
     public final class SetCmd implements org.aesh.command.GroupCommand<CommandInvocation> {
         public CommandResult execute(CommandInvocation ci) { show("Settings: feedback " + feedbackMode); return CommandResult.SUCCESS; }
         public List<Command<CommandInvocation>> getCommands() {
@@ -657,21 +632,21 @@ public class repl implements AutoCloseable {
         }
     }
 
-    @CommandDefinition(name = "env", description = "view or change the eval context")
+    @CommandDefinition(name = "/env", description = "view or change the eval context")
     public final class EnvCmd implements Command<CommandInvocation> {
         @Option(name = "class-path", description = "add to the classpath")
         String classPath;
         public CommandResult execute(CommandInvocation ci) { doEnv(classPath); return CommandResult.SUCCESS; }
     }
 
-    @CommandDefinition(name = "edit", description = "show snippet source")
+    @CommandDefinition(name = "/edit", description = "show snippet source")
     public final class EditCmd implements Command<CommandInvocation> {
         @Argument(description = "snippet name or id")
         String target;
         public CommandResult execute(CommandInvocation ci) { doEdit(target); return CommandResult.SUCCESS; }
     }
 
-    @CommandDefinition(name = "deps", description = "manage JBang dependencies")
+    @CommandDefinition(name = "/deps", description = "manage JBang dependencies")
     public final class DepsCmd implements org.aesh.command.GroupCommand<CommandInvocation> {
         public CommandResult execute(CommandInvocation ci) {
             show("Usage: /deps add <GAV|query|#>, /deps search <query>, /deps list");

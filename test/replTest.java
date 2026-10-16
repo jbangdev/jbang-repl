@@ -377,12 +377,6 @@ public class replTest {
         });
 
         // completion
-        test("command completion after slash", () -> {
-            var r = repl();
-            var co = new FakeComplete("/va", 3);
-            r.repl.complete(co);
-            assertListContains(co.candidates, "/vars");
-        });
         test("signature help on open paren", () -> {
             var r = repl();
             String code = "ProcessHandle.of(";
@@ -441,45 +435,12 @@ public class replTest {
             r.repl.accept("/deps list");
             assertAnyContains(r.out, "No added dependencies");
         });
-        test("/deps completion includes search", () -> {
-            var r = repl();
-            var co = new FakeComplete("/deps s", 7);
-            r.repl.complete(co);
-            assertListContains(co.candidates, "search");
-        });
-        test("/deps subcommand completion", () -> {
-            var r = repl();
-            var co = new FakeComplete("/deps ", 6);
-            r.repl.complete(co);
-            assertListContains(co.candidates, "add");
-            assertListContains(co.candidates, "list");
-            eq(6, co.offset);
-        });
-        test("/save flag completion", () -> {
-            var r = repl();
-            var co = new FakeComplete("/save --", 8);
-            r.repl.complete(co);
-            assertListContains(co.candidates, "--all");
-            assertListContains(co.candidates, "--history");
-        });
-        test("/help completes command names", () -> {
-            var r = repl();
-            var co = new FakeComplete("/help li", 8);
-            r.repl.complete(co);
-            assertListContains(co.candidates, "list");
-        });
         test("/drop completes declared names", () -> {
             var r = repl();
             r.repl.accept("int widget = 1;");
             var co = new FakeComplete("/drop wid", 9);
             r.repl.complete(co);
             assertListContains(co.candidates, "widget");
-        });
-        test("/env completes class-path flag", () -> {
-            var r = repl();
-            var co = new FakeComplete("/env --", 7);
-            r.repl.complete(co);
-            assertListContains(co.candidates, "--class-path");
         });
         test("Maven.looksLikeGav / isCoordinate", () -> {
             eq(true, Maven.looksLikeGav("g:a:1.0"));
