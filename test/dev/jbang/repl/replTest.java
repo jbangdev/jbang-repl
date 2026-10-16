@@ -404,13 +404,28 @@ public class replTest {
             assertNoneContains(lines, "{@code");
             assertNoneContains(lines, "press tab again");
         });
-        test("DocFormat.colorLine colors headers, signatures, params, hint, footer", () -> {
+        test("DocFormat.colorLine colors headers, params, hint, footer", () -> {
             assertStr(DocFormat.colorLine("Parameters:"), "\u001b[1;33m");
-            assertStr(DocFormat.colorLine("Optional<T> X.of(long p)"), "\u001b[1;36m");
             assertStr(DocFormat.colorLine("<press tab again to see documentation>"), "\u001b[90m");
-            // indented "name - desc": the name is coloured, the rest kept
-            assertStr(DocFormat.colorLine("    pid - a native process ID"), "\u001b[36mpid\u001b[0m - a native process ID");
+            // indented "name - desc": the name is coloured (yellow), the rest kept
+            assertStr(DocFormat.colorLine("    pid - a native process ID"), "\u001b[33mpid\u001b[0m - a native process ID");
             assertStr(DocFormat.colorLine(DocFormat.pageFooter(1, 3)), "\u001b[90m");
+        });
+        test("DocFormat.colorSignature separates type, name, params", () -> {
+            String s = DocFormat.colorSignature("java.util.Optional<ProcessHandle> ProcessHandle.of(long pid)");
+            assertStr(s, "\u001b[36mjava.util.Optional<ProcessHandle>\u001b[0m");   // return type cyan
+            assertStr(s, "\u001b[1;35mof\u001b[0m");                                  // method name magenta
+            assertStr(s, "\u001b[36mlong\u001b[0m \u001b[33mpid\u001b[0m");            // param type cyan, name yellow
+            assertStr(s, "\u001b[90mProcessHandle.\u001b[0m");                        // owner grey
+            // field: name magenta, type cyan
+            String f = DocFormat.colorSignature("System.out:java.io.PrintStream");
+            assertStr(f, "\u001b[1;35mout\u001b[0m");
+            assertStr(f, "\u001b[36mjava.io.PrintStream\u001b[0m");
+        });
+        test("DocFormat.splitTopLevel ignores commas in generics", () -> {
+            var ps = DocFormat.splitTopLevel("Map<K,V> m, int n");
+            eq(2, ps.size());
+            eq("Map<K,V> m", ps.get(0).strip());
         });
         test("DocFormat.stripMarkup removes HTML, entities and links", () -> {
             eq("the List now", DocFormat.stripMarkup("the {@link java.util.List} now"));

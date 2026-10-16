@@ -77,7 +77,7 @@ public class repl implements AutoCloseable {
                     .enableAlias(false)
                     .persistHistory(false)
                     .redrawPromptOnInterrupt(true)
-                    .promptSupplier(() -> new Prompt(pending.length() == 0 ? "java> " : "...> "))
+                    .promptSupplier(() -> new Prompt(pending.length() == 0 ? "jrepl> " : "...> "))
                     .commandNotFoundHandler((line, output) -> {
                         try { accept(line); } catch (Exception e) { show("Error: " + e.getMessage()); }
                     })
@@ -437,16 +437,19 @@ public class repl implements AutoCloseable {
 
     /** Render documentation stage docStage: 0 = signature(s)+hint, 1..N = javadoc pages (wraps at the end). */
     private void renderDocStage(org.aesh.readline.ConsoleBuffer cb, List<SourceCodeAnalysis.Documentation> docs) {
-        List<String> out = new ArrayList<>();
+        List<String> out = new ArrayList<>();   // already-coloured lines
         if (docStage <= 0) {
             docStage = 0;
-            for (var d : docs) out.add(d.signature());
-            out.add(DocFormat.HINT);
+            for (var d : docs) out.add(DocFormat.colorSignature(d.signature()));
+            out.add(DocFormat.colorLine(DocFormat.HINT));
         } else {
             List<String> full = new ArrayList<>();
             for (var d : docs) {
-                full.add(d.signature());
-                if (d.javadoc() != null && !d.javadoc().isBlank()) { full.add(""); full.addAll(DocFormat.javadoc(d.javadoc())); }
+                full.add(DocFormat.colorSignature(d.signature()));
+                if (d.javadoc() != null && !d.javadoc().isBlank()) {
+                    full.add("");
+                    for (String jl : DocFormat.javadoc(d.javadoc())) full.add(DocFormat.colorLine(jl));
+                }
                 full.add("");
             }
             int height = 24;
@@ -455,15 +458,15 @@ public class repl implements AutoCloseable {
             int page = docStage - 1;
             if (page >= pages.size()) { // past the last page -> wrap back to the signature
                 docStage = 0;
-                for (var d : docs) out.add(d.signature());
-                out.add(DocFormat.HINT);
+                for (var d : docs) out.add(DocFormat.colorSignature(d.signature()));
+                out.add(DocFormat.colorLine(DocFormat.HINT));
             } else {
                 out.addAll(pages.get(page));
-                if (pages.size() > 1) out.add(DocFormat.pageFooter(page + 1, pages.size()));
+                if (pages.size() > 1) out.add(DocFormat.colorLine(DocFormat.pageFooter(page + 1, pages.size())));
             }
         }
         StringBuilder sb = new StringBuilder("\r\n");
-        for (String l : out) sb.append(DocFormat.colorLine(l)).append("\r\n");
+        for (String l : out) sb.append(l).append("\r\n");
         cb.writeOut(sb.toString());
         cb.drawLineForceDisplay();
     }
