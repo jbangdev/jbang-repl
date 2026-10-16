@@ -421,7 +421,7 @@ public class repl implements AutoCloseable {
         int c = cursor - 1;
         while (c >= 0 && code.charAt(c) == ' ') c--;
         boolean argPos = c >= 0 && (code.charAt(c) == '(' || code.charAt(c) == ',');
-        var docs = jshell.sourceCodeAnalysis().documentation(code, cursor, true);
+        var docs = resolveDocs(code, cursor);
         if (docs.isEmpty()) { lastDocKey = null; return false; }
         String key = cursor + ":" + code;
         if (!key.equals(lastDocKey)) {
@@ -433,6 +433,37 @@ public class repl implements AutoCloseable {
         docStage++;                 // repeated Tab on the same buffer: advance a stage
         renderDocStage(cb, docs);
         return true;
+    }
+
+    /**
+     * jshell's documentation() only resolves at a method's open paren, not after a closed `()` or a
+     * bare method name. Try the direct cursor, then the matching `(` of a preceding `)`, then
+     * appending `(` to a trailing identifier \u2014 so docs work for `foo()`<tab> and `foo`<tab> too.
+     */
+    private List<SourceCodeAnalysis.Documentation> resolveDocs(String code, int cursor) {
+        var sca = jshell.sourceCodeAnalysis();
+        var d = sca.documentation(code, cursor, true);
+        if (!d.isEmpty()) return d;
+        int c = cursor - 1;
+        while (c >= 0 && code.charAt(c) == ' ') c--;
+        if (c >= 0 && code.charAt(c) == ')') {                 // cursor after a call: query at its '('
+            int open = matchingOpenParen(code, c);
+            if (open >= 0) { d = sca.documentation(code, open + 1, true); if (!d.isEmpty()) return d; }
+        } else if (c >= 0 && Character.isJavaIdentifierPart(code.charAt(c))) { // bare method name: try adding '('
+            d = sca.documentation(code.substring(0, cursor) + "(", cursor + 1, true);
+            if (!d.isEmpty()) return d;
+        }
+        return List.of();
+    }
+
+    static int matchingOpenParen(String code, int closeIdx) {
+        int depth = 0;
+        for (int i = closeIdx; i >= 0; i--) {
+            char ch = code.charAt(i);
+            if (ch == ')') depth++;
+            else if (ch == '(' && --depth == 0) return i;
+        }
+        return -1;
     }
 
     /** Render documentation stage docStage: 0 = signature(s)+hint, 1..N = javadoc pages (wraps at the end). */

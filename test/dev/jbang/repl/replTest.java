@@ -422,6 +422,12 @@ public class replTest {
             assertStr(f, "\u001b[1;35mout\u001b[0m");
             assertStr(f, "\u001b[36mjava.io.PrintStream\u001b[0m");
         });
+        test("matchingOpenParen finds the paren for a closing one", () -> {
+            eq(0, repl.matchingOpenParen("()", 1));
+            eq(1, repl.matchingOpenParen("a(b())", 5));   // outer ) matches the ( after a
+            eq(3, repl.matchingOpenParen("a(b())", 4));   // inner )
+            eq(-1, repl.matchingOpenParen("abc)", 3));
+        });
         test("DocFormat.splitTopLevel ignores commas in generics", () -> {
             var ps = DocFormat.splitTopLevel("Map<K,V> m, int n");
             eq(2, ps.size());
