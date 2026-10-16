@@ -1,46 +1,105 @@
-# jbang-repl (experimental) — highlighting spike
+# jbang-repl
 
-A Java REPL backed by the public JShell API and using **aesh-readline** (not JLine).
+A Java REPL that runs as a single [JBang](https://jbang.dev) script. It uses the
+public **JShell** API for the language smarts and **aesh-readline** for the
+terminal, then adds the things I always wished `jshell` had: live Maven
+dependencies, colour everywhere, and documentation you can actually read.
 
-## Run
+## Try it
 
-Requires JBang on `PATH` and JDK 21+.
+One command. No clone, no build, no install:
 
 ```sh
-jbang src/dev/jbang/repl/repl.java
+jbang repl@jbangdev/jbang-repl
 ```
 
-Or install with `jbang app install --name jbang-repl src/dev/jbang/repl/repl.java` (the helper is also embedded in the single-file JBang source). This is an **experimental prototype**, not an upstream JBang command.
-
-Use Java expressions, `/deps add`, `/vars`, `/list`, `/save`, `/exit`.
+(Requires JBang on your `PATH` and JDK 21+. JDK 25+ gets module imports.)
 
 ```text
-java> var greeting = "hello";
-java> /deps add com.fasterxml.jackson.core:jackson-databind:2.19.0
-java> /highlight preview var x = "hello";
+jrepl> 40 + 2
+$1 ==> 42
+jrepl> $_ * 10            # $_ is the last result
+$2 ==> 420
+jrepl> /deps add jackson-databind     # pick from a live search, no restart
+jrepl> var m = new com.fasterxml.jackson.databind.ObjectMapper();
+jrepl> ProcessHandle.current().info()<TAB>   # signature, then paged javadoc
 ```
 
-`/highlight preview` prints a highlighted sample **after Enter**. It does NOT color the editable buffer while typing. This is deliberate: aesh-readline 3.14 does not expose a supported highlighting/redraw extension point. Printing ANSI escape sequences using a cursor listener corrupts interactive redraw and is not an acceptable workaround.
+## Why not just jshell?
 
-## Highlighting implementation
+`jshell` is great. This leans on the same JShell engine but changes the parts
+that live *around* it:
 
-`ReplSyntaxHighlighter.java` takes a `JShell` instance and returns SGR-colored text for the supplied buffer. It uses `SourceCodeAnalysis.highlights()` for semantic keyword/deprecation information, plus basic lexical styling for strings, char literals, text blocks and comments. Slash-prefixed commands are colored separately. The adapter preserves unstyled source text (no formatting changes).
+| | jshell | jbang-repl |
+|---|---|---|
+| **Add a library mid-session** | not possible — restart with a classpath | `/deps add <query>` searches Maven Central and adds it live |
+| **Last result** | `$1`, `$2`, … (you track the number) | `$_` always points at the latest result |
+| **Signature help** | monochrome text | types, method names and parameter names each coloured |
+| **Javadoc on Tab** | staged, plain text | staged **and** paginated **and** colour-formatted (HTML/`{@link}` stripped) |
+| **Command help** | `/help <cmd>` | double-Tab on any `/command` renders its options and args inline |
+| **Input** | plain | live syntax highlighting as you type |
+| **Prompt** | customisable but no colour, `%s` only | built from code — colour and anything dynamic |
+| **Ctrl-C** | interrupts | asks first, confirms on a second press |
+| **Startup scripts** | built in | the *real* `DEFAULT`/`PRINTING`/`TOOLING` loaded from the JDK, plus your own |
 
-Java highlighting currently uses UTF-16 indices supplied by JShell; ANSI rendering never enters the editable input buffer.
+### `/deps` — the headline feature
 
-## Upstream aesh-readline work required for true live highlighting
+Type part of a name and let it search:
 
-See [AESh_HIGHLIGHTER_HOOK.md](AESh_HIGHLIGHTER_HOOK.md). The contract is render-only: the highlighter sees the full editable buffer and returns styled spans or styled text, with no mutation of cursor positions/history/undo. The renderer must avoid delta-only partial repaints while highlighting is active.
+```text
+jrepl> /deps search jackson-databind
+  1) com.fasterxml.jackson.core:jackson-databind:2.19.0
+  2) tools.jackson.core:jackson-databind:3.0.0-rc4
+  ...
+Add one with: /deps add <#>
+jrepl> /deps add 1
+Added com.fasterxml.jackson.core:jackson-databind:2.19.0
+```
 
-## Local smoke test
+Resolution goes through JBang itself, so the same `//DEPS` coordinates work, and
+`/save` writes them back out as a runnable JBang script.
+
+### Progressive, colourful docs
+
+Tab once to complete, Tab again for the signature, keep tabbing to page through
+the javadoc — types in cyan, names in magenta, parameters in yellow, section
+headers in bold. Works on methods (`foo(`), closed calls (`foo()`), bare
+classes (`System`) and fields (`Integer.MAX_VALUE`).
+
+## Commands
+
+Standard jshell-style set, implemented as proper [aesh](https://github.com/aeshell/aesh)
+`@Command`s (so `--options` and group sub-commands get parsed and completed for you):
+
+```
+/list /vars /methods /types /imports /drop /edit
+/save /open /reset /reload /history
+/deps (add|search|list)   /set feedback   /env
+/help [cmd]   /exit   /! /<id> /-<n>      # rerun
+```
+
+Startup selection mirrors jshell:
 
 ```sh
-javac ReplSyntaxHighlighter.java HighlighterSmokeTest.java
-java HighlighterSmokeTest
+jbang repl@jbangdev/jbang-repl --startup PRINTING --startup TOOLING   # println(), javac(), ...
+jbang repl@jbangdev/jbang-repl --no-startup
 ```
 
-This smoke test ran successfully on OpenJDK 21. It checks that removing ANSI styling yields exactly the original input. The aesh + JBang runtime integration could not be tested here because JBang and its dependencies are not installed in the environment.
+## How it works
 
-## Limitations
+- **Semantics** come from the public `jdk.jshell.SourceCodeAnalysis` — the exact
+  engine `jshell` uses — so completions, signatures and javadoc are identical.
+- **Presentation** (progressive docs, pagination, colour, the prompt loop) is
+  custom, because jshell's own version lives in an encapsulated internal package
+  with no public API.
+- Startup scripts are read straight from the JDK's `jdk.jshell` module resources
+  rather than copied.
 
-The current REPL still manually dispatches `/` commands; moving these to `aesh-command` is separate work. Runtime dependency resolution shells out to JBang. Full standard JShell command coverage and Java completion are not implemented. Do not run untrusted Java snippets.
+## Status
+
+Experimental prototype, not an official JBang command. A single source file
+(`src/dev/jbang/repl/repl.java`) plus a few helpers; tests in `test/`.
+
+```sh
+jbang test/dev/jbang/repl/replTest.java      # run the test suite
+```
