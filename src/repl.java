@@ -109,6 +109,92 @@ public class repl implements AutoCloseable {
         return false;
     }
 
+    // Verbatim copies of jshell's predefined startup scripts (encapsulated in the jdk.jshell
+    // module, not exposed by the public API). DEFAULT uses the portable import list so it works
+    // on Java 21+ (jshell's DEFAULT.jsh uses `import module java.base;`, which needs Java 25).
+    static final String DEFAULT_JSH = """
+        import java.io.*;
+        import java.math.*;
+        import java.net.*;
+        import java.nio.file.*;
+        import java.util.*;
+        import java.util.concurrent.*;
+        import java.util.function.*;
+        import java.util.prefs.*;
+        import java.util.regex.*;
+        import java.util.stream.*;
+        """;
+    static final String PRINTING_JSH = """
+        void print(boolean b) { System.out.print(b); }
+        void print(char c) { System.out.print(c); }
+        void print(int i) { System.out.print(i); }
+        void print(long l) { System.out.print(l); }
+        void print(float f) { System.out.print(f); }
+        void print(double d) { System.out.print(d); }
+        void print(char s[]) { System.out.print(s); }
+        void print(String s) { System.out.print(s); }
+        void print(Object obj) { System.out.print(obj); }
+        void println() { System.out.println(); }
+        void println(boolean b) { System.out.println(b); }
+        void println(char c) { System.out.println(c); }
+        void println(int i) { System.out.println(i); }
+        void println(long l) { System.out.println(l); }
+        void println(float f) { System.out.println(f); }
+        void println(double d) { System.out.println(d); }
+        void println(char s[]) { System.out.println(s); }
+        void println(String s) { System.out.println(s); }
+        void println(Object obj) { System.out.println(obj); }
+        void printf(java.util.Locale l, String format, Object... args) { System.out.printf(l, format, args); }
+        void printf(String format, Object... args) { System.out.printf(format, args); }
+        """;
+    static final String TOOLING_JSH = """
+        void run(String name, String... args) {
+            var tool = java.util.spi.ToolProvider.findFirst(name);
+            if (tool.isEmpty()) throw new RuntimeException("No such tool found: " + name);
+            var code = tool.get().run(System.out, System.err, args);
+            if (code != 0) System.err.println(name + " returned non-zero exit code: " + code);
+        }
+        void jar(String... args) { run("jar", args); }
+        void javac(String... args) { run("javac", args); }
+        void javadoc(String... args) { run("javadoc", args); }
+        void javap(String... args) { run("javap", args); }
+        void jdeps(String... args) { run("jdeps", args); }
+        void jlink(String... args) { run("jlink", args); }
+        void jmod(String... args) { run("jmod", args); }
+        void jpackage(String... args) { run("jpackage", args); }
+        void tools() {
+            java.util.ServiceLoader.load(java.util.spi.ToolProvider.class).stream()
+                .map(java.util.ServiceLoader.Provider::get)
+                .map(java.util.spi.ToolProvider::name).sorted().forEach(System.out::println);
+        }
+        """;
+
+    static final Map<String, String> STARTUP_PRESETS = Map.of(
+            "DEFAULT", DEFAULT_JSH,
+            "PRINTING", PRINTING_JSH,
+            "TOOLING", TOOLING_JSH,
+            "JAVASE", "import module java.se;\n"); // needs Java 25+; best-effort
+
+    /** Resolve a startup spec (preset name or file path) and evaluate it silently. */
+    void loadStartup(String spec) throws IOException {
+        String content = STARTUP_PRESETS.containsKey(spec) ? STARTUP_PRESETS.get(spec)
+                : Files.readString(Path.of(spec), StandardCharsets.UTF_8);
+        runStartupSilently(content);
+    }
+
+    /** Evaluate a block of snippets without echoing results or recording them. */
+    void runStartupSilently(String content) {
+        var sca = jshell.sourceCodeAnalysis();
+        String src = content;
+        while (src != null && !src.isBlank()) {
+            var info = sca.analyzeCompletion(src);
+            String snippet = info.source();
+            if (snippet == null || snippet.isBlank()) break;
+            jshell.eval(snippet);
+            src = info.remaining();
+        }
+    }
+
     /** Headless constructor for tests: no terminal, output captured via sink. */
     repl(java.util.function.Consumer<String> sink) {
         connection = null;
@@ -119,14 +205,40 @@ public class repl implements AutoCloseable {
 
     public static void main(String[] args) throws Exception {
         try (var repl = new repl()) {
-            if (args.length > 0) {
-                if (args.length == 1 && "--help".equals(args[0])) {
-                    System.out.println("Usage: jbang repl.java [--help]\nInteractive Java shell: /help for commands.");
-                    return;
+            List<String> startupSpecs = new ArrayList<>();
+            List<String> loadFiles = new ArrayList<>();
+            boolean noStartup = false;
+            for (int i = 0; i < args.length; i++) {
+                String a = args[i];
+                switch (a) {
+                    case "--help", "-h", "-?" -> {
+                        System.out.println("""
+                            Usage: jbang repl.java [options] [load-files...]
+                              --startup <file|DEFAULT|PRINTING|TOOLING|JAVASE>  startup script (repeatable)
+                              --no-startup                                      don't run the default startup
+                              --help, -h, -?                                    this help
+                            Predefined startups: DEFAULT (common imports), PRINTING (print/println/printf),
+                            TOOLING (javac/jar/javap/...), JAVASE (all Java SE imports).
+                            Interactive Java shell: /help for commands.""");
+                        return;
+                    }
+                    case "--no-startup" -> noStartup = true;
+                    case "--startup" -> {
+                        if (++i >= args.length) { System.err.println("--startup requires an argument"); System.exit(2); }
+                        startupSpecs.add(args[i]);
+                    }
+                    default -> {
+                        if (a.startsWith("-")) { System.err.println("Unknown argument: " + a); System.exit(2); }
+                        loadFiles.add(a);
+                    }
                 }
-                System.err.println("Unknown arguments: " + String.join(" ", args));
-                System.exit(2);
             }
+            if (startupSpecs.isEmpty() && !noStartup) startupSpecs.add("DEFAULT");
+            for (String spec : startupSpecs) {
+                try { repl.loadStartup(spec); }
+                catch (IOException e) { System.err.println("Cannot read startup '" + spec + "': " + e.getMessage()); System.exit(2); }
+            }
+            for (String f : loadFiles) repl.runStartupSilently(Files.readString(Path.of(f), StandardCharsets.UTF_8));
             // External kill (SIGTERM) can't prompt; at least restore the terminal and
             // kill JShell's RemoteExecutionControl agent JVM on exit.
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {

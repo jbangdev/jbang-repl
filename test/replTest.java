@@ -316,6 +316,28 @@ public class replTest {
             eq(false, r.repl.handleInterrupt(1000));
             eq(false, r.repl.handleInterrupt(5000));   // >3s later: asks again, no quit
         });
+        test("DEFAULT startup provides common imports", () -> {
+            var r = repl();
+            r.repl.runStartupSilently(repl.DEFAULT_JSH);
+            r.repl.accept("List<Integer> xs = new ArrayList<>(); xs.size()");
+            assertContains(r.out, "0");
+        });
+        test("PRINTING startup defines println", () -> {
+            var r = repl();
+            r.repl.loadStartup("PRINTING");
+            r.out.clear();
+            r.repl.accept("/methods");
+            assertAnyContains(r.out, "println");
+            assertAnyContains(r.out, "printf");
+        });
+        test("TOOLING startup defines tool runners", () -> {
+            var r = repl();
+            r.repl.loadStartup("TOOLING");
+            r.out.clear();
+            r.repl.accept("/methods");
+            assertAnyContains(r.out, "javac");
+            assertAnyContains(r.out, "jar");
+        });
         test("/quit also exits", () -> {
             var r = repl();
             r.repl.accept("/quit");
