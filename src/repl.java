@@ -68,6 +68,7 @@ public class repl implements AutoCloseable {
             // commandNotFoundHandler, so the registry is empty and every line routes there.
             var settings = SettingsBuilder.<CommandInvocation>builder()
                     .connection(connection)
+                    .aeshContext(aeshContext)
                     .commandRegistry(AeshCommandRegistryBuilder.<CommandInvocation>builder().create())
                     .enableOperatorParser(false)   // don't parse Java |, ;, >, && as shell operators
                     .enableAlias(false)
@@ -374,8 +375,14 @@ public class repl implements AutoCloseable {
     private String lastDocKey;       // code+cursor of the last documentation request
     private boolean docJavadocNext;  // next Tab at the same spot shows javadoc
 
-    /** Custom handler: render jshell-style signature/doc help ourselves (ordered, formatted), else default. */
-    final class DocHandler extends org.aesh.readline.completion.impl.SimpleCompletionHandler {
+    // Shared context so DocHandler and the console build the same AeshCompleteOperation type.
+    private final org.aesh.console.AeshContext aeshContext = new org.aesh.console.DefaultAeshContext();
+
+    /** Custom handler: render jshell-style signature/doc help ourselves (ordered, formatted), else default.
+     *  Extends AeshCompletionHandler so it creates AeshCompleteOperation (required by ReadlineConsole's
+     *  internal AeshCompletion). */
+    final class DocHandler extends org.aesh.command.impl.completer.AeshCompletionHandler {
+        DocHandler() { super(aeshContext); }
         @Override public void complete(org.aesh.readline.InputProcessor ip) {
             if (renderDoc(ip.buffer())) return;
             super.complete(ip);
