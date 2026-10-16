@@ -308,6 +308,19 @@ public class replTest {
             eq(true, r.repl.isExitRequested());
             eq(3, r.repl.exitCode());
         });
+        test("engineClosed detects the closed-JShell error", () -> {
+            eq(true, repl.engineClosed(new IllegalStateException("JShell (x) has been closed.")));
+            eq(false, repl.engineClosed(new IllegalStateException("something else")));
+            eq(false, repl.engineClosed(new RuntimeException("has been closed")));
+        });
+        test("eval recovers after the engine is closed (System.exit)", () -> {
+            var r = repl();
+            r.repl.accept("System.exit(0)");
+            r.out.clear();
+            r.repl.accept("1 + 1");   // engine is dead; should restart and evaluate
+            assertAnyContains(r.out, "had shut down");
+            assertContains(r.out, "2");
+        });
         test("Ctrl-C asks first, confirms on second within window", () -> {
             var r = repl();
             eq(false, r.repl.handleInterrupt(1000));

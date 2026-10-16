@@ -568,7 +568,15 @@ public class repl implements AutoCloseable {
             if (!info.completeness().isComplete()) return;
             String code = info.source();
             if (code.isBlank()) { pending.setLength(0); return; }
-            List<SnippetEvent> events = jshell.eval(code);
+            List<SnippetEvent> events;
+            try {
+                events = jshell.eval(code);
+            } catch (IllegalStateException e) {
+                if (!engineClosed(e)) throw e;
+                recoverEngine();
+                try { events = jshell.eval(code); }           // retry once on the fresh engine
+                catch (IllegalStateException e2) { pending.setLength(0); return; }
+            }
             for (SnippetEvent event : events) {
                 if (event.exception() != null) {
                     show("Exception: " + event.exception());
@@ -1034,11 +1042,34 @@ public class repl implements AutoCloseable {
             return;
         }
         // JShell classpath updates are additive; removal/version swaps require a fresh session.
-        for (String jar : cp.split(java.util.regex.Pattern.quote(File.pathSeparator))) {
-            if (!jar.isBlank()) { jshell.addToClasspath(jar); resolvedJars.add(jar); }
-        }
+        List<String> jars = Arrays.stream(cp.split(java.util.regex.Pattern.quote(File.pathSeparator)))
+                .filter(j -> !j.isBlank()).collect(Collectors.toList());
+        resolvedJars.addAll(jars);
         dependencies.add(gav);
-        show("Added " + gav + " to JShell classpath");
+        try {
+            for (String jar : jars) jshell.addToClasspath(jar);
+            show("Added " + gav + " to JShell classpath");
+        } catch (IllegalStateException e) {
+            if (!engineClosed(e)) throw e;
+            recoverEngine();   // the fresh engine picks up all resolvedJars, including these
+            show("Added " + gav + " (after restarting the engine).");
+        }
+    }
+
+    /** True if the error means JShell's execution engine has shut down (e.g. a snippet called System.exit). */
+    static boolean engineClosed(Throwable e) {
+        return e instanceof IllegalStateException && String.valueOf(e.getMessage()).contains("has been closed");
+    }
+
+    /** Rebuild the JShell engine after it died; declared snippets are lost (like jshell's crash restart). */
+    private void recoverEngine() {
+        try { jshell.close(); } catch (Exception ignored) {}
+        jshell = JShell.builder().out(System.out).err(System.err).build();
+        syntaxHighlighter = new ReplSyntaxHighlighter(jshell);
+        hiddenSnippetIds.clear();
+        acceptedSnippets.clear();
+        for (String jar : resolvedJars) { try { jshell.addToClasspath(jar); } catch (Exception ignored) {} }
+        show("JShell engine had shut down (a snippet may have called System.exit) \u2014 started a fresh session.");
     }
 
     private void show(String message) { sink.accept(message); }
