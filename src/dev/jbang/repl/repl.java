@@ -405,7 +405,12 @@ public class repl implements AutoCloseable {
         return true;
     }
 
-    /** If the cursor warrants signature help, render it (in order) and redraw. Returns true if shown. */
+    /**
+     * jshell-style doc disclosure. At an argument position (`(`/`,`) the first Tab shows the
+     * signature; otherwise the first Tab lets aesh complete and a *repeated* Tab on the unchanged
+     * buffer shows the signature of the resolved class/field/method; each further Tab pages the
+     * javadoc, then wraps back. Returns true if it rendered (and aesh completion is skipped).
+     */
     boolean renderDoc(org.aesh.readline.ConsoleBuffer cb) {
         String prefix = pending.toString();
         String line = cb.buffer().asString();
@@ -416,17 +421,25 @@ public class repl implements AutoCloseable {
         int c = cursor - 1;
         while (c >= 0 && code.charAt(c) == ' ') c--;
         boolean argPos = c >= 0 && (code.charAt(c) == '(' || code.charAt(c) == ',');
-        int[] anchor = new int[1];
-        boolean noCompletions = jshell.sourceCodeAnalysis().completionSuggestions(code, cursor, anchor).isEmpty();
-        if (!argPos && !noCompletions) return false;
         var docs = jshell.sourceCodeAnalysis().documentation(code, cursor, true);
         if (docs.isEmpty()) { lastDocKey = null; return false; }
         String key = cursor + ":" + code;
-        if (!key.equals(lastDocKey)) { lastDocKey = key; docStage = 0; } else docStage++;
+        if (!key.equals(lastDocKey)) {
+            lastDocKey = key;
+            if (argPos) { docStage = 0; renderDocStage(cb, docs); return true; } // show signature right away
+            docStage = -1; // first Tab elsewhere: let aesh complete; the next identical Tab shows docs
+            return false;
+        }
+        docStage++;                 // repeated Tab on the same buffer: advance a stage
+        renderDocStage(cb, docs);
+        return true;
+    }
 
-        // Stage 0: just the signature(s) + hint. Stages 1..N: full javadoc, one terminal page at a time.
+    /** Render documentation stage docStage: 0 = signature(s)+hint, 1..N = javadoc pages (wraps at the end). */
+    private void renderDocStage(org.aesh.readline.ConsoleBuffer cb, List<SourceCodeAnalysis.Documentation> docs) {
         List<String> out = new ArrayList<>();
-        if (docStage == 0) {
+        if (docStage <= 0) {
+            docStage = 0;
             for (var d : docs) out.add(d.signature());
             out.add(DocFormat.HINT);
         } else {
@@ -453,7 +466,6 @@ public class repl implements AutoCloseable {
         for (String l : out) sb.append(DocFormat.colorLine(l)).append("\r\n");
         cb.writeOut(sb.toString());
         cb.drawLineForceDisplay();
-        return true;
     }
 
     /** Signature(s) and, when javadoc=true, a jshell-style formatted javadoc body. */
