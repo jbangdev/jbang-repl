@@ -1,7 +1,7 @@
 ///usr/bin/env jbang "$0" "$@" ; exit $?
 //JAVA 21+
 //DEPS org.aesh:aesh:3.18.5
-//SOURCES ../src/repl.java
+//SOURCES ../../../../src/dev/jbang/repl/repl.java
 //RUNTIME_OPTIONS --add-opens jdk.jshell/jdk.jshell.tool.resources=ALL-UNNAMED
 
 package dev.jbang.repl;

@@ -1,6 +1,6 @@
 ///usr/bin/env jbang "$0" "$@" ; exit $?
 //JAVA 21+
-//SOURCES ../src/repl.java
+//SOURCES ../../../../src/dev/jbang/repl/repl.java
 
 package dev.jbang.repl;
 
