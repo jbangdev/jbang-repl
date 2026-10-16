@@ -320,9 +320,9 @@ public class repl implements AutoCloseable {
     private List<String> commandArgs(String cmd) {
         List<String> out = new ArrayList<>(switch (cmd) {
             case "deps" -> List.of("add", "list", "search");
-            case "save" -> List.of("-all", "-history", "-start");
-            case "list" -> List.of("-all");
-            case "reload" -> List.of("-quiet");
+            case "save" -> List.of("--all", "--history", "--start");
+            case "list" -> List.of("--all");
+            case "reload" -> List.of("--quiet");
             case "set" -> List.of("feedback");
             case "env" -> List.of("--class-path");
             case "help" -> COMMANDS;
@@ -551,16 +551,13 @@ public class repl implements AutoCloseable {
         public CommandResult execute(CommandInvocation ci) { pending.setLength(0); show("Input buffer cleared."); return CommandResult.SUCCESS; }
     }
 
-    @CommandDefinition(name = "list", description = "list source you have typed (-all or <name>)")
+    @CommandDefinition(name = "list", description = "list source you have typed")
     public final class ListCmd implements Command<CommandInvocation> {
-        @Arguments(description = "-all | <name>")
-        List<String> args;
-        public CommandResult execute(CommandInvocation ci) {
-            boolean all = args != null && args.contains("-all");
-            String name = (args == null) ? null : args.stream().filter(a -> !a.startsWith("-")).findFirst().orElse(null);
-            listSnippets(all, name);
-            return CommandResult.SUCCESS;
-        }
+        @Option(shortName = 'a', name = "all", hasValue = false, description = "include startup/failed/overwritten snippets")
+        boolean all;
+        @Argument(description = "snippet name or id")
+        String name;
+        public CommandResult execute(CommandInvocation ci) { listSnippets(all, name); return CommandResult.SUCCESS; }
     }
 
     @CommandDefinition(name = "vars", description = "list declared variables")
@@ -601,11 +598,11 @@ public class repl implements AutoCloseable {
         public CommandResult execute(CommandInvocation ci) { doReset(); return CommandResult.SUCCESS; }
     }
 
-    @CommandDefinition(name = "reload", description = "reset and replay history (-quiet)")
+    @CommandDefinition(name = "reload", description = "reset and replay history")
     public final class ReloadCmd implements Command<CommandInvocation> {
-        @Arguments(description = "-quiet")
-        List<String> args;
-        public CommandResult execute(CommandInvocation ci) { doReload(args != null && args.contains("-quiet")); return CommandResult.SUCCESS; }
+        @Option(shortName = 'q', name = "quiet", hasValue = false, description = "don't report replay")
+        boolean quiet;
+        public CommandResult execute(CommandInvocation ci) { doReload(quiet); return CommandResult.SUCCESS; }
     }
 
     @CommandDefinition(name = "history", description = "history of what you have typed")
@@ -613,16 +610,19 @@ public class repl implements AutoCloseable {
         public CommandResult execute(CommandInvocation ci) { history.forEach(repl.this::show); return CommandResult.SUCCESS; }
     }
 
-    @CommandDefinition(name = "save", description = "save source to a file ([-all|-history|-start] <file>)")
+    @CommandDefinition(name = "save", description = "save source to a file")
     public final class SaveCmd implements Command<CommandInvocation> {
-        @Arguments(description = "[-all|-history|-start] <file>")
-        List<String> args;
+        @Option(name = "all", hasValue = false, description = "save all snippets incl. failed/overwritten")
+        boolean all;
+        @Option(name = "history", hasValue = false, description = "save the input history")
+        boolean histMode;
+        @Option(name = "start", hasValue = false, description = "save the startup definitions")
+        boolean start;
+        @Argument(description = "file", required = true)
+        String file;
         public CommandResult execute(CommandInvocation ci) {
-            if (args == null || args.isEmpty()) { show("Usage: /save [-all|-history|-start] <file>"); return CommandResult.SUCCESS; }
-            boolean all = args.contains("-all"), hist = args.contains("-history"), start = args.contains("-start");
-            String file = args.stream().filter(a -> !a.startsWith("-")).findFirst().orElse(null);
-            if (file == null) { show("Usage: /save [-all|-history|-start] <file>"); return CommandResult.SUCCESS; }
-            try { doSave(all, hist, start, file); } catch (IOException e) { show("Error: " + e.getMessage()); return CommandResult.FAILURE; }
+            if (file == null) { show("Usage: /save [--all|--history|--start] <file>"); return CommandResult.SUCCESS; }
+            try { doSave(all, histMode, start, file); } catch (IOException e) { show("Error: " + e.getMessage()); return CommandResult.FAILURE; }
             return CommandResult.SUCCESS;
         }
     }
@@ -855,16 +855,16 @@ public class repl implements AutoCloseable {
     private void helpTopic(String topic) {
         if (topic == null || topic.isBlank()) {
             show("Available commands:");
-            show("  /list [-all|<name>]   list source you have typed");
+            show("  /list [--all|<name>]  list source you have typed");
             show("  /vars [<name>]        list declared variables");
             show("  /methods [<name>]     list declared methods");
             show("  /types [<name>]       list declared types");
             show("  /imports              list imported items");
             show("  /drop <name|id>       delete a snippet");
-            show("  /save [-all|-history|-start] <file>  save source to a file");
+            show("  /save [--all|--history|--start] <file>  save source to a file");
             show("  /open <file>          open a file as source input");
             show("  /reset                reset the REPL state");
-            show("  /reload [-quiet]      reset and replay history");
+            show("  /reload [--quiet]     reset and replay history");
             show("  /history              history of what you have typed");
             show("  /set [feedback <m>]   set configuration");
             show("  /env [--class-path p] view or change the eval context");
@@ -878,12 +878,12 @@ public class repl implements AutoCloseable {
         }
         String key = topic.startsWith("/") ? topic.substring(1) : topic;
         show(switch (key) {
-            case "list" -> "/list lists the snippets you have entered. /list -all includes failed/overwritten ones.";
+            case "list" -> "/list lists the snippets you have entered. /list --all (-a) includes failed/overwritten ones.";
             case "vars" -> "/vars lists declared variables and their current values.";
             case "methods" -> "/methods lists declared methods and their signatures.";
             case "types" -> "/types lists declared classes and interfaces.";
             case "drop" -> "/drop <name or id> deletes a snippet.";
-            case "save" -> "/save [-all|-history|-start] <file> writes source to a file.";
+            case "save" -> "/save [--all|--history|--start] <file> writes source to a file.";
             case "open" -> "/open <file> reads and evaluates a file.";
             case "reset" -> "/reset discards all snippets and restarts the engine.";
             case "reload" -> "/reload restarts the engine and replays accepted snippets.";

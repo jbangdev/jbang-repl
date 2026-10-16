@@ -159,7 +159,7 @@ public class replTest {
             var r = repl();
             r.repl.accept("int q = 1;");
             r.out.clear();
-            r.repl.accept("/reload -quiet");
+            r.repl.accept("/reload --quiet");
             assertNoneContains(r.out, "replaying");
         });
 
@@ -188,7 +188,7 @@ public class replTest {
             var r = repl();
             r.repl.accept("int s = 8;");
             Path f = Files.createTempFile("repl-hist", ".txt");
-            r.repl.accept("/save -history " + f);
+            r.repl.accept("/save --history " + f);
             assertStr(Files.readString(f), "int s = 8;");
             Files.deleteIfExists(f);
         });
@@ -196,14 +196,14 @@ public class replTest {
             var r = repl();
             r.repl.accept("int s = 8;");
             Path f = Files.createTempFile("repl-all", ".java");
-            r.repl.accept("/save -all " + f);
+            r.repl.accept("/save --all " + f);
             assertStr(Files.readString(f), "int s = 8;");
             Files.deleteIfExists(f);
         });
-        test("/save without file shows usage", () -> {
+        test("/save without file is rejected by aesh", () -> {
             var r = repl();
             r.repl.accept("/save");
-            assertAnyContains(r.out, "Usage: /save");
+            assertAnyContains(r.out, "required");
         });
 
         // /open
@@ -457,10 +457,10 @@ public class replTest {
         });
         test("/save flag completion", () -> {
             var r = repl();
-            var co = new FakeComplete("/save -", 7);
+            var co = new FakeComplete("/save --", 8);
             r.repl.complete(co);
-            assertListContains(co.candidates, "-all");
-            assertListContains(co.candidates, "-history");
+            assertListContains(co.candidates, "--all");
+            assertListContains(co.candidates, "--history");
         });
         test("/help completes command names", () -> {
             var r = repl();
