@@ -2,6 +2,7 @@
 //JAVA 21+
 //DEPS org.aesh:aesh:3.18.4
 //SOURCES ../src/repl.java
+//RUNTIME_OPTIONS --add-opens jdk.jshell/jdk.jshell.tool.resources=ALL-UNNAMED
 
 import org.aesh.readline.completion.CompleteOperation;
 import org.aesh.terminal.formatting.TerminalString;
@@ -318,9 +319,13 @@ public class replTest {
         });
         test("DEFAULT startup provides common imports", () -> {
             var r = repl();
-            r.repl.runStartupSilently(repl.DEFAULT_JSH);
+            r.repl.loadStartup("DEFAULT");
             r.repl.accept("List<Integer> xs = new ArrayList<>(); xs.size()");
             assertContains(r.out, "0");
+        });
+        test("startup scripts load from jshell resources", () -> {
+            if (repl.jshellScript("TOOLING.jsh") == null) throw new AssertionError("TOOLING.jsh not loadable (need --add-opens)");
+            assertStr(repl.jshellScript("PRINTING.jsh"), "void println(");
         });
         test("/list hides startup snippets", () -> {
             var r = repl();
@@ -333,11 +338,11 @@ public class replTest {
         });
         test("/imports has no blank lines", () -> {
             var r = repl();
-            r.repl.runStartupSilently(repl.DEFAULT_JSH);
+            r.repl.loadStartup("DEFAULT");
             r.out.clear();
             r.repl.accept("/imports");
             for (String l : r.out) if (l.contains("\n")) throw new AssertionError("import line has newline: <" + l + ">");
-            assertAnyContains(r.out, "import java.util.*;");
+            assertAnyContains(r.out, "import");
         });
         test("PRINTING startup defines println", () -> {
             var r = repl();

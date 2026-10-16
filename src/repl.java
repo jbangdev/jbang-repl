@@ -4,7 +4,7 @@
 //SOURCES DocFormat.java
 //SOURCES Maven.java
 //SOURCES ReplSyntaxHighlighter.java
-//RUNTIME_OPTIONS --enable-native-access=ALL-UNNAMED
+//RUNTIME_OPTIONS --enable-native-access=ALL-UNNAMED --add-opens jdk.jshell/jdk.jshell.tool.resources=ALL-UNNAMED
 
 import jdk.jshell.JShell;
 import jdk.jshell.Snippet;
@@ -128,82 +128,30 @@ public class repl implements AutoCloseable {
         return false;
     }
 
-    // Verbatim copies of jshell's predefined startup scripts (encapsulated in the jdk.jshell
-    // module, not exposed by the public API). DEFAULT uses the portable import list so it works
-    // on Java 21+ (jshell's DEFAULT.jsh uses `import module java.base;`, which needs Java 25).
-    static final String DEFAULT_JSH = """
-        import java.io.*;
-        import java.math.*;
-        import java.net.*;
-        import java.nio.file.*;
-        import java.util.*;
-        import java.util.concurrent.*;
-        import java.util.function.*;
-        import java.util.prefs.*;
-        import java.util.regex.*;
-        import java.util.stream.*;
-        """;
-    static final String PRINTING_JSH = """
-        void print(boolean b) { System.out.print(b); }
-        void print(char c) { System.out.print(c); }
-        void print(int i) { System.out.print(i); }
-        void print(long l) { System.out.print(l); }
-        void print(float f) { System.out.print(f); }
-        void print(double d) { System.out.print(d); }
-        void print(char s[]) { System.out.print(s); }
-        void print(String s) { System.out.print(s); }
-        void print(Object obj) { System.out.print(obj); }
-        void println() { System.out.println(); }
-        void println(boolean b) { System.out.println(b); }
-        void println(char c) { System.out.println(c); }
-        void println(int i) { System.out.println(i); }
-        void println(long l) { System.out.println(l); }
-        void println(float f) { System.out.println(f); }
-        void println(double d) { System.out.println(d); }
-        void println(char s[]) { System.out.println(s); }
-        void println(String s) { System.out.println(s); }
-        void println(Object obj) { System.out.println(obj); }
-        void printf(java.util.Locale l, String format, Object... args) { System.out.printf(l, format, args); }
-        void printf(String format, Object... args) { System.out.printf(format, args); }
-        """;
-    static final String TOOLING_JSH = """
-        void run(String name, String... args) {
-            var tool = java.util.spi.ToolProvider.findFirst(name);
-            if (tool.isEmpty()) throw new RuntimeException("No such tool found: " + name);
-            var code = tool.get().run(System.out, System.err, args);
-            if (code != 0) System.err.println(name + " returned non-zero exit code: " + code);
-        }
-        void jar(String... args) { run("jar", args); }
-        void javac(String... args) { run("javac", args); }
-        void javadoc(String... args) { run("javadoc", args); }
-        void javap(String... args) { run("javap", args); }
-        void jdeps(String... args) { run("jdeps", args); }
-        void jlink(String... args) { run("jlink", args); }
-        void jmod(String... args) { run("jmod", args); }
-        void jpackage(String... args) { run("jpackage", args); }
-        void tools() {
-            java.util.ServiceLoader.load(java.util.spi.ToolProvider.class).stream()
-                .map(java.util.ServiceLoader.Provider::get)
-                .map(java.util.spi.ToolProvider::name).sorted().forEach(System.out::println);
-        }
-        """;
+    static final Set<String> STARTUP_PRESETS = Set.of("DEFAULT", "PRINTING", "TOOLING", "JAVASE");
 
-    static final Map<String, String> STARTUP_PRESETS = Map.of(
-            "DEFAULT", DEFAULT_JSH,
-            "PRINTING", PRINTING_JSH,
-            "TOOLING", TOOLING_JSH,
-            "JAVASE", "import module java.se;\n"); // needs Java 25+; best-effort
-
-    /** jshell's DEFAULT uses `import module java.base;` (Java 25+); fall back to the explicit list. */
-    static String defaultStartup() {
-        return Runtime.version().feature() >= 25 ? "import module java.base;\n" : DEFAULT_JSH;
+    /** Read one of jshell's predefined startup scripts from the jdk.jshell module resources. */
+    static String jshellScript(String fileName) {
+        try {
+            Class<?> c = Class.forName("jdk.jshell.tool.JavaShellToolBuilder");
+            try (var in = c.getResourceAsStream("resources/" + fileName)) {
+                if (in != null) return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            }
+        } catch (Exception ignored) {}
+        return null;
     }
 
     /** Resolve a startup spec (preset name or file path) and evaluate it silently. */
     void loadStartup(String spec) throws IOException {
-        String content = spec.equals("DEFAULT") ? defaultStartup()
-                : STARTUP_PRESETS.containsKey(spec) ? STARTUP_PRESETS.get(spec)
-                : Files.readString(Path.of(spec), StandardCharsets.UTF_8);
+        String content = switch (spec) {
+            // Load the canonical scripts straight from jshell instead of hardcoding them.
+            case "DEFAULT" -> jshellScript(Runtime.version().feature() >= 25 ? "DEFAULT.jsh" : "DEFAULT_NO_MODULE_IMPORTS.jsh");
+            case "PRINTING" -> jshellScript("PRINTING.jsh");
+            case "TOOLING" -> jshellScript("TOOLING.jsh");
+            case "JAVASE" -> "import module java.se;\n"; // generated by jshell, not a resource file
+            default -> Files.readString(Path.of(spec), StandardCharsets.UTF_8);
+        };
+        if (content == null) { show("Could not load startup '" + spec + "' from jshell (needs --add-opens)."); return; }
         runStartupSilently(content);
     }
 
