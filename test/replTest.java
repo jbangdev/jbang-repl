@@ -435,6 +435,26 @@ public class replTest {
             r.repl.accept("/deps list");
             assertAnyContains(r.out, "No added dependencies");
         });
+        test("command docs: name, usage and description", () -> {
+            var r = repl();
+            var lines = r.repl.commandDocLines("/list", false);
+            assertAnyContains(lines, "/list");
+            assertAnyContains(lines, "list source you have typed");
+        });
+        test("command docs: group subcommands", () -> {
+            var r = repl();
+            var lines = r.repl.commandDocLines("/deps", false);
+            assertAnyContains(lines, "/deps");
+            assertAnyContains(lines, "add");
+            assertAnyContains(lines, "resolve and add");
+            assertAnyContains(lines, "search");
+        });
+        test("command docs: prefix lists multiple", () -> {
+            var r = repl();
+            var lines = r.repl.commandDocLines("/s", false);
+            assertAnyContains(lines, "/save");
+            assertAnyContains(lines, "/set");
+        });
         test("/drop completes declared names", () -> {
             var r = repl();
             r.repl.accept("int widget = 1;");

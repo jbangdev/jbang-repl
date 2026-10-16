@@ -62,6 +62,7 @@ public class repl implements AutoCloseable {
         connection = new TerminalConnection();
         sink = s -> connection.write(s + "\r\n");
         buildCommandRuntime();
+        introspectCommands();
         try {
             // Drive the loop with aesh's ReadlineConsole (3.18.5 exposes cursorListener +
             // completionHandler seams). The console owns the /command registry and dispatches
@@ -226,6 +227,7 @@ public class repl implements AutoCloseable {
         console = null;
         this.sink = sink;
         buildCommandRuntime();
+        introspectCommands();
     }
 
     public static void main(String[] args) throws Exception {
@@ -368,8 +370,89 @@ public class repl implements AutoCloseable {
         DocHandler() { super(aeshContext); }
         @Override public void complete(org.aesh.readline.InputProcessor ip) {
             if (renderDoc(ip.buffer())) return;
+            if (renderCommandDocs(ip.buffer())) return;
             super.complete(ip);
         }
+    }
+
+    // ---- /command documentation (jshell-style second-Tab help, nicely rendered) ----
+    static final class CmdDoc { String name = "", usage = "", desc = ""; final List<CmdDoc> subs = new ArrayList<>(); }
+    private List<CmdDoc> commandDocs = new ArrayList<>();
+    private String lastCmdDocKey;
+
+    /** Introspect the command registry once so we can render per-command help. */
+    private void introspectCommands() {
+        try {
+            var reg = createRegistry();
+            List<CmdDoc> docs = new ArrayList<>();
+            for (String name : new java.util.TreeSet<>(reg.getAllCommandNames()))
+                docs.add(toCmdDoc(reg.getCommand(name, name).getParser()));
+            commandDocs = docs;
+        } catch (Exception ignored) {}
+    }
+
+    private CmdDoc toCmdDoc(org.aesh.command.impl.parser.CommandLineParser<?> parser) {
+        var pc = parser.getProcessedCommand();
+        CmdDoc d = new CmdDoc();
+        d.name = pc.name();
+        d.desc = pc.description() == null ? "" : pc.description();
+        d.usage = usageOf(pc);
+        if (parser.isGroupCommand())
+            for (var child : parser.getAllChildParsers()) d.subs.add(toCmdDoc(child));
+        return d;
+    }
+
+    private static String usageOf(org.aesh.command.impl.internal.ProcessedCommand<?, ?> pc) {
+        StringBuilder sb = new StringBuilder();
+        for (var o : pc.getOptions()) sb.append("[--").append(o.name()).append("] ");
+        var arg = pc.getArgument() != null ? pc.getArgument() : pc.getArguments();
+        if (arg != null) {
+            String d = arg.description() == null ? "" : arg.description().strip().replaceAll("^<+", "").replaceAll(">+$", "");
+            String ph = "<" + (d.isBlank() ? "arg" : d) + ">";
+            sb.append(arg.isRequired() ? ph : "[" + ph + "]");
+        }
+        return sb.toString().strip();
+    }
+
+    private static final String C_CMD = "\u001b[1;36m", C_ARG = "\u001b[33m", C_DESC = "\u001b[90m", C_RST = "\u001b[0m";
+
+    /** Rendered help lines for every command whose name starts with word. color=false for tests. */
+    List<String> commandDocLines(String word, boolean color) {
+        List<String> out = new ArrayList<>();
+        for (CmdDoc d : commandDocs) {
+            if (!d.name.startsWith(word)) continue;
+            out.add(cmd(d.name, color) + (d.usage.isEmpty() ? "" : " " + arg(d.usage, color)));
+            if (!d.desc.isBlank()) out.add("      " + dim(d.desc, color));
+            if (!d.subs.isEmpty()) {
+                int w = d.subs.stream().mapToInt(s -> (s.name + (s.usage.isEmpty() ? "" : " " + s.usage)).length()).max().orElse(0);
+                for (CmdDoc s : d.subs) {
+                    String plain = s.name + (s.usage.isEmpty() ? "" : " " + s.usage);
+                    String left = cmd(s.name, color) + (s.usage.isEmpty() ? "" : " " + arg(s.usage, color));
+                    out.add("      " + left + " ".repeat(w - plain.length() + 2) + dim(s.desc, color));
+                }
+            }
+        }
+        return out;
+    }
+    private static String cmd(String s, boolean c) { return c ? C_CMD + s + C_RST : s; }
+    private static String arg(String s, boolean c) { return c ? C_ARG + s + C_RST : s; }
+    private static String dim(String s, boolean c) { return c ? C_DESC + s + C_RST : s; }
+
+    /** Second Tab on a /command prefix: render per-command docs (first Tab lets aesh list names). */
+    boolean renderCommandDocs(org.aesh.readline.ConsoleBuffer cb) {
+        if (!pending.isEmpty()) return false;
+        String line = cb.buffer().asString();
+        int cur = cb.buffer().multiCursor();
+        String word = line.substring(0, cur).strip(); // tolerate the trailing space aesh adds after a unique command
+        if (!word.startsWith("/") || word.contains(" ")) return false; // only a bare command name
+        if (commandDocLines(word, false).isEmpty()) return false;
+        String key = "cmd:" + word;
+        if (!key.equals(lastCmdDocKey)) { lastCmdDocKey = key; return false; } // first Tab: let aesh list names
+        StringBuilder sb = new StringBuilder("\r\n");
+        for (String l : commandDocLines(word, true)) sb.append(l).append("\r\n");
+        cb.writeOut(sb.toString());
+        cb.drawLineForceDisplay();
+        return true;
     }
 
     /** If the cursor warrants signature help, render it (in order) and redraw. Returns true if shown. */
