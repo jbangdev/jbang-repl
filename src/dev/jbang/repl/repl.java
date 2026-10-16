@@ -308,7 +308,7 @@ public class repl implements AutoCloseable {
     }
 
     private String lastDocKey;       // code+cursor of the last documentation request
-    private boolean docJavadocNext;  // next Tab at the same spot shows javadoc
+    private int docStage;            // 0 = signatures, 1..N = javadoc page N (Tab advances, then wraps)
 
     // Shared context so DocHandler and the console build the same AeshCompleteOperation type.
     private final org.aesh.console.AeshContext aeshContext = new org.aesh.console.DefaultAeshContext();
@@ -419,16 +419,40 @@ public class repl implements AutoCloseable {
         int[] anchor = new int[1];
         boolean noCompletions = jshell.sourceCodeAnalysis().completionSuggestions(code, cursor, anchor).isEmpty();
         if (!argPos && !noCompletions) return false;
+        var docs = jshell.sourceCodeAnalysis().documentation(code, cursor, true);
+        if (docs.isEmpty()) { lastDocKey = null; return false; }
         String key = cursor + ":" + code;
-        boolean javadoc = key.equals(lastDocKey) && docJavadocNext;
-        List<String> lines = documentationLines(code, cursor, javadoc);
-        if (lines.isEmpty()) { lastDocKey = null; return false; }
+        if (!key.equals(lastDocKey)) { lastDocKey = key; docStage = 0; } else docStage++;
+
+        // Stage 0: just the signature(s) + hint. Stages 1..N: full javadoc, one terminal page at a time.
+        List<String> out = new ArrayList<>();
+        if (docStage == 0) {
+            for (var d : docs) out.add(d.signature());
+            out.add(DocFormat.HINT);
+        } else {
+            List<String> full = new ArrayList<>();
+            for (var d : docs) {
+                full.add(d.signature());
+                if (d.javadoc() != null && !d.javadoc().isBlank()) { full.add(""); full.addAll(DocFormat.javadoc(d.javadoc())); }
+                full.add("");
+            }
+            int height = 24;
+            try { height = Math.max(6, cb.size().getHeight() - 3); } catch (Exception ignored) {}
+            var pages = DocFormat.paginate(full, height);
+            int page = docStage - 1;
+            if (page >= pages.size()) { // past the last page -> wrap back to the signature
+                docStage = 0;
+                for (var d : docs) out.add(d.signature());
+                out.add(DocFormat.HINT);
+            } else {
+                out.addAll(pages.get(page));
+                if (pages.size() > 1) out.add(DocFormat.pageFooter(page + 1, pages.size()));
+            }
+        }
         StringBuilder sb = new StringBuilder("\r\n");
-        for (String l : lines) sb.append(DocFormat.colorLine(l)).append("\r\n");
+        for (String l : out) sb.append(DocFormat.colorLine(l)).append("\r\n");
         cb.writeOut(sb.toString());
         cb.drawLineForceDisplay();
-        lastDocKey = key;
-        docJavadocNext = !javadoc;
         return true;
     }
 

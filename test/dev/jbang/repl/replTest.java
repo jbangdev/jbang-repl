@@ -404,11 +404,26 @@ public class replTest {
             assertNoneContains(lines, "{@code");
             assertNoneContains(lines, "press tab again");
         });
-        test("DocFormat.colorLine colors headers, signatures, hint", () -> {
+        test("DocFormat.colorLine colors headers, signatures, params, hint, footer", () -> {
             assertStr(DocFormat.colorLine("Parameters:"), "\u001b[1;33m");
             assertStr(DocFormat.colorLine("Optional<T> X.of(long p)"), "\u001b[1;36m");
             assertStr(DocFormat.colorLine("<press tab again to see documentation>"), "\u001b[90m");
-            eq("    pid - a native process ID", DocFormat.colorLine("    pid - a native process ID"));
+            // indented "name - desc": the name is coloured, the rest kept
+            assertStr(DocFormat.colorLine("    pid - a native process ID"), "\u001b[36mpid\u001b[0m - a native process ID");
+            assertStr(DocFormat.colorLine(DocFormat.pageFooter(1, 3)), "\u001b[90m");
+        });
+        test("DocFormat.stripMarkup removes HTML, entities and links", () -> {
+            eq("the List now", DocFormat.stripMarkup("the {@link java.util.List} now"));
+            eq("a code value", DocFormat.stripMarkup("a {@code code} value"));
+            eq("see getDefault(x)", DocFormat.stripMarkup("see {@link java.util.Locale#getDefault(x)}"));
+            eq("x < y & z", DocFormat.stripMarkup("<p>x &lt; y &amp; z</p>"));
+            eq("use here", DocFormat.stripMarkup("use {@link Foo#bar here}")); // explicit label wins
+        });
+        test("DocFormat.paginate splits into fixed-size pages", () -> {
+            var pages = DocFormat.paginate(java.util.List.of("a","b","c","d","e"), 2);
+            eq(3, pages.size());
+            eq(2, pages.get(0).size());
+            eq(1, pages.get(2).size());
         });
         test("DocFormat.wrap wraps to width with indent", () -> {
             var out = DocFormat.wrap("one two three four five", "  ", 12);
