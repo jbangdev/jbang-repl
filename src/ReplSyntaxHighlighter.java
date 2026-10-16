@@ -1,3 +1,5 @@
+package dev.jbang.repl;
+
 import jdk.jshell.JShell;
 import jdk.jshell.SourceCodeAnalysis;
 import java.util.Arrays;

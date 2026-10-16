@@ -2,6 +2,8 @@
 //JAVA 21+
 //SOURCES ../src/repl.java
 
+package dev.jbang.repl;
+
 import jdk.jshell.JShell;
 public class HighlighterSmokeTest {
     public static void main(String[] args) {

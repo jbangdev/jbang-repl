@@ -6,6 +6,8 @@
 //SOURCES ReplSyntaxHighlighter.java
 //RUNTIME_OPTIONS --enable-native-access=ALL-UNNAMED --add-opens jdk.jshell/jdk.jshell.tool.resources=ALL-UNNAMED
 
+package dev.jbang.repl;
+
 import jdk.jshell.JShell;
 import jdk.jshell.Snippet;
 import jdk.jshell.SnippetEvent;
