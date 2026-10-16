@@ -1,6 +1,6 @@
 ///usr/bin/env jbang "$0" "$@" ; exit $?
 //JAVA 21+
-//DEPS org.aesh:aesh:3.18.4
+//DEPS org.aesh:aesh:3.18.5
 //SOURCES DocFormat.java
 //SOURCES Maven.java
 //SOURCES ReplSyntaxHighlighter.java
