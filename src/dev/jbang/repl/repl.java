@@ -74,6 +74,7 @@ public class repl implements AutoCloseable {
                     .aeshContext(aeshContext)
                     .commandRegistry(createRegistry())
                     .enableOperatorParser(false)   // don't parse Java |, ;, >, && as shell operators
+                    .enableShellEscape(true)       // !cmd runs a native OS command
                     .enableAlias(false)
                     .persistHistory(false)
                     .redrawPromptOnInterrupt(true)
