@@ -269,8 +269,8 @@ public class repl implements AutoCloseable {
             System.out.println("JBang REPL (aesh + JShell, Java " + Runtime.version().feature() + ")");
             System.out.println("PID " + ProcessHandle.current().pid());
             System.out.println("Enter Java or /help. Ctrl-D to exit.");
-            repl.console.start();   // blocks until the console stops (exit / Ctrl-D)
-            if (repl.exitRequested && repl.exitCode != 0) System.exit(repl.exitCode);
+            repl.console.start();   // blocks until the console stops (e.g. Ctrl-D)
+            System.exit(repl.exitCode); // force exit; JShell's agent thread can otherwise linger
         }
     }
 
@@ -829,8 +829,12 @@ public class repl implements AutoCloseable {
     private void doExit(Integer code) {
         exitRequested = true;
         if (code != null) exitCode = code;
-        if (console != null) console.stop();
-        if (connection != null) connection.close();
+        // /exit runs on the console's reader thread; stopping the console from there doesn't
+        // reliably unblock start(), and JShell's agent thread keeps the JVM alive. Hard-exit
+        // after best-effort cleanup (the shutdown hook restores the terminal + closes JShell).
+        if (connection == null) return;   // headless/tests: just record intent
+        try { if (console != null) console.stop(); } catch (Exception ignored) {}
+        System.exit(exitCode);
     }
 
     private void helpTopic(String topic) {
