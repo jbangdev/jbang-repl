@@ -81,6 +81,7 @@ public class repl implements AutoCloseable {
                     .setInterruptHandler(v -> { if (handleInterrupt(System.currentTimeMillis())) doExit(null); })
                     .cursorListener(this::colorize)
                     .completionHandler(new DocHandler())
+                    .tailTipSuggestions(true)
                     .build();
             console = new ReadlineConsole(settings);
             console.addCompletion(new Completion<CompleteOperation>() {
@@ -638,10 +639,22 @@ public class repl implements AutoCloseable {
     }
 
     @CommandDefinition(name = "set", description = "set configuration")
-    public final class SetCmd implements Command<CommandInvocation> {
-        @Arguments(description = "<sub> [value]")
-        List<String> args;
-        public CommandResult execute(CommandInvocation ci) { doSet(args); return CommandResult.SUCCESS; }
+    public final class SetCmd implements org.aesh.command.GroupCommand<CommandInvocation> {
+        public CommandResult execute(CommandInvocation ci) { show("Settings: feedback " + feedbackMode); return CommandResult.SUCCESS; }
+        public List<Command<CommandInvocation>> getCommands() {
+            return List.of(new SetFeedbackCmd());
+        }
+    }
+
+    @CommandDefinition(name = "feedback", description = "show or set the feedback mode")
+    public final class SetFeedbackCmd implements Command<CommandInvocation> {
+        @Argument(description = "mode")
+        String mode;
+        public CommandResult execute(CommandInvocation ci) {
+            if (mode != null) feedbackMode = mode.strip();
+            show("Feedback mode: " + feedbackMode);
+            return CommandResult.SUCCESS;
+        }
     }
 
     @CommandDefinition(name = "env", description = "view or change the eval context")
@@ -658,25 +671,44 @@ public class repl implements AutoCloseable {
         public CommandResult execute(CommandInvocation ci) { doEdit(target); return CommandResult.SUCCESS; }
     }
 
-    @CommandDefinition(name = "deps", description = "manage JBang dependencies (add <GAV|query|#> | search <query> | list)")
-    public final class DepsCmd implements Command<CommandInvocation> {
-        @Arguments(description = "<add|search|list> ...")
-        List<String> args;
+    @CommandDefinition(name = "deps", description = "manage JBang dependencies")
+    public final class DepsCmd implements org.aesh.command.GroupCommand<CommandInvocation> {
         public CommandResult execute(CommandInvocation ci) {
-            String usage = "Usage: /deps add <GAV|query|#>, /deps search <query>, /deps list";
-            if (args == null || args.isEmpty()) { show(usage); return CommandResult.SUCCESS; }
-            String sub = args.get(0);
-            String rest = args.size() > 1 ? String.join(" ", args.subList(1, args.size())) : "";
-            try {
-                switch (sub) {
-                    case "list" -> depsList();
-                    case "search" -> { if (rest.isBlank()) show("Usage: /deps search <query>"); else depsSearch(rest); }
-                    case "add" -> { if (rest.isBlank()) show("Usage: /deps add <GAV|query|#>"); else depsAdd(rest); }
-                    default -> show(usage);
-                }
-            } catch (Exception e) { show("Error: " + e.getMessage()); return CommandResult.FAILURE; }
+            show("Usage: /deps add <GAV|query|#>, /deps search <query>, /deps list");
             return CommandResult.SUCCESS;
         }
+        public List<Command<CommandInvocation>> getCommands() {
+            return List.of(new DepsAddCmd(), new DepsSearchCmd(), new DepsListCmd());
+        }
+    }
+
+    @CommandDefinition(name = "add", description = "resolve and add a dependency (GAV, search query, or result #)")
+    public final class DepsAddCmd implements Command<CommandInvocation> {
+        @Arguments(description = "<GAV|query|#>")
+        List<String> value;
+        public CommandResult execute(CommandInvocation ci) {
+            if (value == null || value.isEmpty()) { show("Usage: /deps add <GAV|query|#>"); return CommandResult.SUCCESS; }
+            try { depsAdd(String.join(" ", value)); }
+            catch (Exception e) { show("Error: " + e.getMessage()); return CommandResult.FAILURE; }
+            return CommandResult.SUCCESS;
+        }
+    }
+
+    @CommandDefinition(name = "search", description = "search Maven Central")
+    public final class DepsSearchCmd implements Command<CommandInvocation> {
+        @Arguments(description = "<query>")
+        List<String> value;
+        public CommandResult execute(CommandInvocation ci) {
+            if (value == null || value.isEmpty()) { show("Usage: /deps search <query>"); return CommandResult.SUCCESS; }
+            try { depsSearch(String.join(" ", value)); }
+            catch (Exception e) { show("Error: " + e.getMessage()); return CommandResult.FAILURE; }
+            return CommandResult.SUCCESS;
+        }
+    }
+
+    @CommandDefinition(name = "list", description = "list added dependencies")
+    public final class DepsListCmd implements Command<CommandInvocation> {
+        public CommandResult execute(CommandInvocation ci) { depsList(); return CommandResult.SUCCESS; }
     }
 
     // ---- jshell command implementations ----
@@ -807,19 +839,6 @@ public class repl implements AutoCloseable {
             if (!s.isEmpty()) { any = true; runSource(s.get(0).source()); }
         }
         if (!any) show("No such snippet: " + token);
-    }
-
-    private void doSet(List<String> args) {
-        if (args == null || args.isEmpty()) { show("Settings: feedback " + feedbackMode); return; }
-        String sub = args.get(0);
-        switch (sub) {
-            case "feedback" -> {
-                if (args.size() > 1) { feedbackMode = args.get(1).strip(); show("Feedback mode: " + feedbackMode); }
-                else show("Feedback mode: " + feedbackMode);
-            }
-            case "start", "editor", "mode", "prompt", "truncation" -> show("/set " + sub + " is not configurable in this REPL.");
-            default -> show("Usage: /set feedback <mode>");
-        }
     }
 
     private void doEnv(String classPath) {
