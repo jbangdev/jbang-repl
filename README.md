@@ -5,6 +5,8 @@ public **JShell** API for the language smarts and **aesh-readline** for the
 terminal, then adds the things I always wished `jshell` had: live Maven
 dependencies, colour everywhere, and documentation you can actually read.
 
+![jbang-repl in action](demo.gif)
+
 ## Try it
 
 One command. No clone, no build, no install:
