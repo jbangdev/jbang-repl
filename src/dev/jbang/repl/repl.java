@@ -75,6 +75,7 @@ public class repl implements AutoCloseable {
                     .commandRegistry(createRegistry())
                     .enableOperatorParser(false)   // don't parse Java |, ;, >, && as shell operators
                     .enableShellEscape(true)       // !cmd runs a native OS command
+                    .enableExport(false)           // don't shell-expand $vars ($_, $1, ...) in Java input
                     .enableAlias(false)
                     .persistHistory(false)
                     .redrawPromptOnInterrupt(true)
